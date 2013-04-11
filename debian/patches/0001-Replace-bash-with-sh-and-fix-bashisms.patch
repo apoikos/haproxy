@@ -1,0 +1,38 @@
+From: Christo Buschek <crito@30loops.net>
+Date: Thu, 11 Apr 2013 14:18:19 +0300
+Subject: Replace bash with sh and fix bashisms
+
+---
+ examples/debugfind        |    2 +-
+ examples/stats_haproxy.sh |    4 ++--
+ 2 files changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/examples/debugfind b/examples/debugfind
+index 88e9760..100f5ef 100644
+--- a/examples/debugfind
++++ b/examples/debugfind
+@@ -1,4 +1,4 @@
+-#!/bin/bash
++#!/bin/sh
+ if [ $# -lt 2 ]; then
+ 	echo "Usage: $0 regex debug_file > extracted_file"
+ 	exit 1
+diff --git a/examples/stats_haproxy.sh b/examples/stats_haproxy.sh
+index 25f23d3..a8bd02b 100644
+--- a/examples/stats_haproxy.sh
++++ b/examples/stats_haproxy.sh
+@@ -1,4 +1,4 @@
+-#!/bin/bash
++#!/bin/sh
+ 
+ ## contrib by prizee.com
+ 
+@@ -11,7 +11,7 @@ fi
+ 
+ printUsage ()
+ {
+-    echo -e "Usage : $(basename $0) [options] -s section
++    printf "Usage : $(basename $0) [options] -s section
+ --section -s section\t: section to use ( --list format)
+ Options :
+ --socket -S [socket]\t: socket to use (default: /var/run/haproxy.stat)
