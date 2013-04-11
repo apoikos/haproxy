@@ -18,6 +18,9 @@ ifeq ($(shell dpkg-architecture -qDEB_HOST_ARCH_CPU),i386)
 	MAKEARGS+= USE_REGPARM=1
 endif
 
+MAKEARGS += CFLAGS="$(shell dpkg-buildflags --get CFLAGS) $(shell dpkg-buildflags --get CPPFLAGS)"
+MAKEARGS += LDFLAGS="$(shell dpkg-buildflags --get LDFLAGS)"
+
 %:
 	dh $@ --with-quilt
 
