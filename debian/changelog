@@ -1,3 +1,9 @@
+haproxy (1.4.23-1) UNRELEASED; urgency=low
+
+  * New upstream version
+
+ -- Apollon Oikonomopoulos <apoikos@gmail.com>  Thu, 11 Apr 2013 13:37:16 +0300
+
 haproxy (1.4.15-1) unstable; urgency=low
 
   * New upstream release with critical bug fix (Closes: #631351)
