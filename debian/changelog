@@ -1,6 +1,6 @@
 haproxy (1.4.23-1) UNRELEASED; urgency=low
 
-  * New upstream version
+  * New upstream version (Closes: #674447, #643650, #678953)
 
  -- Apollon Oikonomopoulos <apoikos@gmail.com>  Thu, 11 Apr 2013 13:37:16 +0300
 
