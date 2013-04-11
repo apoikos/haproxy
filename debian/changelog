@@ -1,4 +1,4 @@
-haproxy (1.4.23-1) UNRELEASED; urgency=low
+haproxy (1.4.23-1) unstable; urgency=low
 
   * New upstream version (Closes: #674447, #643650, #678953)
   * Ship vim addon as vim-haproxy (Closes: #702893)
