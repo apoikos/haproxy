@@ -376,7 +376,7 @@ struct eb_node {
 	eb_troot_t    *node_p;  /* link node's parent */
 	eb_troot_t    *leaf_p;  /* leaf node's parent */
 	short int      bit;     /* link's bit position. */
-	short int      pfx;     /* data prefix length, always related to leaf */
+	short unsigned int pfx; /* data prefix length, always related to leaf */
 };
 
 /* Return the structure of type <type> whose member <member> points to <ptr> */
@@ -466,9 +466,9 @@ __eb_insert_dup(struct eb_node *sub, struct eb_node *new)
 {
 	struct eb_node *head = sub;
 	
-	struct eb_troot *new_left = eb_dotag(&new->branches, EB_LEFT);
-	struct eb_troot *new_rght = eb_dotag(&new->branches, EB_RGHT);
-	struct eb_troot *new_leaf = eb_dotag(&new->branches, EB_LEAF);
+	eb_troot_t *new_left = eb_dotag(&new->branches, EB_LEFT);
+	eb_troot_t *new_rght = eb_dotag(&new->branches, EB_RGHT);
+	eb_troot_t *new_leaf = eb_dotag(&new->branches, EB_LEAF);
 
 	/* first, identify the deepest hole on the right branch */
 	while (eb_gettag(head->branches.b[EB_RGHT]) != EB_LEAF) {

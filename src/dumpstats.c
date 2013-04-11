@@ -441,7 +441,7 @@ int stats_sock_parse_request(struct stream_interface *si, char *line)
 			}
 
 			/* return server's effective weight at the moment */
-			snprintf(trash, sizeof(trash), "%d (initial %d)\n", sv->uweight, sv->iweight);
+			snprintf(trash, trashlen, "%d (initial %d)\n", sv->uweight, sv->iweight);
 			buffer_feed(si->ib, trash);
 			return 1;
 		}
@@ -528,10 +528,14 @@ int stats_sock_parse_request(struct stream_interface *si, char *line)
 			/* static LB algorithms are a bit harder to update */
 			if (px->lbprm.update_server_eweight)
 				px->lbprm.update_server_eweight(sv);
-			else if (sv->eweight)
-				px->lbprm.set_server_status_up(sv);
-			else
-				px->lbprm.set_server_status_down(sv);
+			else if (sv->eweight) {
+				if (px->lbprm.set_server_status_up)
+					px->lbprm.set_server_status_up(sv);
+			}
+			else {
+				if (px->lbprm.set_server_status_down)
+					px->lbprm.set_server_status_down(sv);
+			}
 
 			return 1;
 		}
@@ -721,7 +725,7 @@ void stats_io_handler(struct stream_interface *si)
 			if (buffer_almost_full(si->ib))
 				break;
 
-			reql = buffer_si_peekline(si->ob, trash, sizeof(trash));
+			reql = buffer_si_peekline(si->ob, trash, trashlen);
 			if (reql <= 0) { /* closed or EOL not found */
 				if (reql == 0)
 					break;
@@ -890,7 +894,7 @@ int stats_dump_raw_to_buffer(struct session *s, struct buffer *rep)
 	struct chunk msg;
 	unsigned int up;
 
-	chunk_init(&msg, trash, sizeof(trash));
+	chunk_init(&msg, trash, trashlen);
 
 	switch (s->data_state) {
 	case DATA_ST_INIT:
@@ -1002,7 +1006,7 @@ int stats_http_redir(struct session *s, struct buffer *rep, struct uri_auth *uri
 {
 	struct chunk msg;
 
-	chunk_init(&msg, trash, sizeof(trash));
+	chunk_init(&msg, trash, trashlen);
 
 	switch (s->data_state) {
 	case DATA_ST_INIT:
@@ -1103,7 +1107,7 @@ int stats_dump_http(struct session *s, struct buffer *rep, struct uri_auth *uri)
 	struct chunk msg;
 	unsigned int up;
 
-	chunk_init(&msg, trash, sizeof(trash));
+	chunk_init(&msg, trash, trashlen);
 
 	switch (s->data_state) {
 	case DATA_ST_INIT:
@@ -1340,7 +1344,7 @@ int stats_dump_http(struct session *s, struct buffer *rep, struct uri_auth *uri)
 			chunk_printf(&msg,
 			     "</ul></td>"
 			     "<td align=\"left\" valign=\"top\" nowrap width=\"1%%\">"
-			     "<b>External ressources:</b><ul style=\"margin-top: 0.25em;\">\n"
+			     "<b>External resources:</b><ul style=\"margin-top: 0.25em;\">\n"
 			     "<li><a href=\"" PRODUCT_URL "\">Primary site</a><br>\n"
 			     "<li><a href=\"" PRODUCT_URL_UPD "\">Updates (v" PRODUCT_BRANCH ")</a><br>\n"
 			     "<li><a href=\"" PRODUCT_URL_DOC "\">Online manual</a><br>\n"
@@ -1363,6 +1367,26 @@ int stats_dump_http(struct session *s, struct buffer *rep, struct uri_auth *uri)
 						     "<p><div class=active2>"
 						     "<a class=lfsb href=\"%s\" title=\"Remove this message\">[X]</a> "
 						     "Nothing has changed."
+						     "</div>\n", uri->uri_prefix);
+				}
+				else if (strcmp(s->data_ctx.stats.st_code, STAT_STATUS_PART) == 0) {
+					chunk_printf(&msg,
+						     "<p><div class=active2>"
+						     "<a class=lfsb href=\"%s\" title=\"Remove this message\">[X]</a> "
+						     "Action partially processed.<br>"
+						     "Some server names are probably unknown or ambiguous (duplicated names in the backend)."
+						     "</div>\n", uri->uri_prefix);
+				}
+				else if (strcmp(s->data_ctx.stats.st_code, STAT_STATUS_ERRP) == 0) {
+					chunk_printf(&msg,
+						     "<p><div class=active0>"
+						     "<a class=lfsb href=\"%s\" title=\"Remove this message\">[X]</a> "
+						     "Action not processed because of invalid parameters."
+						     "<ul>"
+						     "<li>The action is maybe unknown.</li>"
+						     "<li>The backend name is probably unknown or ambiguous (duplicated names).</li>"
+						     "<li>Some server names are probably unknown or ambiguous (duplicated names in the backend).</li>"
+						     "</ul>"
 						     "</div>\n", uri->uri_prefix);
 				}
 				else if (strcmp(s->data_ctx.stats.st_code, STAT_STATUS_EXCD) == 0) {
@@ -1451,7 +1475,7 @@ int stats_dump_proxy(struct session *s, struct proxy *px, struct uri_auth *uri)
 	struct listener *l;
 	struct chunk msg;
 
-	chunk_init(&msg, trash, sizeof(trash));
+	chunk_init(&msg, trash, trashlen);
 
 	switch (s->data_ctx.stats.px_st) {
 	case DATA_ST_PX_INIT:
@@ -2461,11 +2485,13 @@ int stats_dump_proxy(struct session *s, struct proxy *px, struct uri_auth *uri)
 					"<option value=\"\"></option>"
 					"<option value=\"disable\">Disable</option>"
 					"<option value=\"enable\">Enable</option>"
+					"<option value=\"stop\">Soft Stop</option>"
+					"<option value=\"start\">Soft Start</option>"
 					"</select>"
-					"<input type=\"hidden\" name=\"b\" value=\"%s\">"
+					"<input type=\"hidden\" name=\"b\" value=\"#%d\">"
 					"&nbsp;<input type=\"submit\" value=\"Apply\">"
 					"</form>",
-					px->id);
+					px->uuid);
 			}
 
 			chunk_printf(&msg, "<p>\n");
@@ -2502,7 +2528,7 @@ int stats_dump_full_sess_to_buffer(struct session *s, struct buffer *rep)
 	extern const char *monthname[12];
 	char pn[INET6_ADDRSTRLEN];
 
-	chunk_init(&msg, trash, sizeof(trash));
+	chunk_init(&msg, trash, trashlen);
 	sess = s->data_ctx.sess.target;
 
 	if (s->data_ctx.sess.section > 0 && s->data_ctx.sess.uid != sess->uniq_id) {
@@ -2566,11 +2592,15 @@ int stats_dump_full_sess_to_buffer(struct session *s, struct buffer *rep)
 			     sess->listener ? sess->listener->name ? sess->listener->name : "?" : "?",
 			     sess->listener ? sess->listener->luid : 0);
 
-		chunk_printf(&msg,
-			     "  backend=%s (id=%u mode=%s) server=%s (id=%u)\n",
-			     sess->be->id, sess->be->uuid, sess->be->mode ? "http" : "tcp",
-			     sess->srv ? sess->srv->id : "<none>",
-			     sess->srv ? sess->srv->puid : 0);
+		if (sess->be->cap & PR_CAP_BE)
+			chunk_printf(&msg,
+				     "  backend=%s (id=%u mode=%s) server=%s (id=%u)\n",
+				     sess->be->id,
+				     sess->be->uuid, sess->be->mode ? "http" : "tcp",
+				     sess->srv ? sess->srv->id : "<none>",
+				     sess->srv ? sess->srv->puid : 0);
+		else
+			chunk_printf(&msg, "  backend=<NONE> (id=-1 mode=-) server=<NONE> (id=-1)\n");
 
 		chunk_printf(&msg,
 			     "  task=%p (state=0x%02x nice=%d calls=%d exp=%s%s)\n",
@@ -2713,7 +2743,7 @@ int stats_dump_sess_to_buffer(struct session *s, struct buffer *rep)
 		return 1;
 	}
 
-	chunk_init(&msg, trash, sizeof(trash));
+	chunk_init(&msg, trash, trashlen);
 
 	switch (s->data_state) {
 	case DATA_ST_INIT:
@@ -2775,7 +2805,7 @@ int stats_dump_sess_to_buffer(struct session *s, struct buffer *rep)
 					     pn,
 					     ntohs(((struct sockaddr_in *)&curr_sess->cli_addr)->sin_port),
 					     curr_sess->fe->id,
-					     curr_sess->be->id,
+					     (curr_sess->be->cap & PR_CAP_BE) ? curr_sess->be->id : "<NONE>",
 					     curr_sess->srv ? curr_sess->srv->id : "<none>"
 					     );
 				break;
@@ -2789,7 +2819,7 @@ int stats_dump_sess_to_buffer(struct session *s, struct buffer *rep)
 					     pn,
 					     ntohs(((struct sockaddr_in6 *)&curr_sess->cli_addr)->sin6_port),
 					     curr_sess->fe->id,
-					     curr_sess->be->id,
+					     (curr_sess->be->cap & PR_CAP_BE) ? curr_sess->be->id : "<NONE>",
 					     curr_sess->srv ? curr_sess->srv->id : "<none>"
 					     );
 
@@ -2983,7 +3013,7 @@ int stats_dump_errors_to_buffer(struct session *s, struct buffer *rep)
 	if (unlikely(rep->flags & (BF_WRITE_ERROR|BF_SHUTW)))
 		return 1;
 
-	chunk_init(&msg, trash, sizeof(trash));
+	chunk_init(&msg, trash, trashlen);
 
 	if (!s->data_ctx.errors.px) {
 		/* the function had not been called yet, let's prepare the

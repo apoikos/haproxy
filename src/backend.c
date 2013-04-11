@@ -159,7 +159,7 @@ struct server *get_server_uh(struct proxy *px, char *uri, int uri_len)
 			if (slashes == px->uri_dirs_depth1) /* depth+1 */
 				break;
 		}
-		else if (c == '?')
+		else if (c == '?' && !px->uri_whole)
 			break;
 
 		hash = c + (hash << 6) + (hash << 16) - hash;
@@ -480,7 +480,6 @@ int assign_server(struct session *s)
 
 	s->srv = NULL;
 	if (s->be->lbprm.algo & BE_LB_KIND) {
-		int len;
 		/* we must check if we have at least one server available */
 		if (!s->be->lbprm.tot_weight) {
 			err = SRV_STATUS_NOSRV;
@@ -518,18 +517,18 @@ int assign_server(struct session *s)
 			switch (s->be->lbprm.algo & BE_LB_PARM) {
 			case BE_LB_HASH_SRC:
 				if (s->cli_addr.ss_family == AF_INET)
-					len = 4;
+					s->srv = get_server_sh(s->be,
+					                       (void *)&((struct sockaddr_in *)&s->cli_addr)->sin_addr,
+					                       4);
 				else if (s->cli_addr.ss_family == AF_INET6)
-					len = 16;
+					s->srv = get_server_sh(s->be,
+					                       (void *)&((struct sockaddr_in6 *)&s->cli_addr)->sin6_addr,
+					                       16);
 				else {
 					/* unknown IP family */
 					err = SRV_STATUS_INTERNAL;
 					goto out;
 				}
-		
-				s->srv = get_server_sh(s->be,
-						       (void *)&((struct sockaddr_in *)&s->cli_addr)->sin_addr,
-						       len);
 				break;
 
 			case BE_LB_HASH_URI:
@@ -1095,6 +1094,8 @@ int backend_parse_balance(const char **args, char *err, int errlen, struct proxy
 		curproxy->lbprm.algo &= ~BE_LB_ALGO;
 		curproxy->lbprm.algo |= BE_LB_ALGO_UH;
 
+		curproxy->uri_whole = 0;
+
 		while (*args[arg]) {
 			if (!strcmp(args[arg], "len")) {
 				if (!*args[arg+1] || (atoi(args[arg+1]) <= 0)) {
@@ -1115,8 +1116,12 @@ int backend_parse_balance(const char **args, char *err, int errlen, struct proxy
 				curproxy->uri_dirs_depth1 = atoi(args[arg+1]) + 1;
 				arg += 2;
 			}
+			else if (!strcmp(args[arg], "whole")) {
+				curproxy->uri_whole = 1;
+				arg += 1;
+			}
 			else {
-				snprintf(err, errlen, "'balance uri' only accepts parameters 'len' and 'depth' (got '%s').", args[arg]);
+				snprintf(err, errlen, "'balance uri' only accepts parameters 'len', 'depth', and 'while' (got '%s').", args[arg]);
 				return -1;
 			}
 		}

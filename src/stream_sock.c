@@ -274,7 +274,7 @@ int stream_sock_read(int fd) {
 		goto out_wakeup;
 
 #if defined(CONFIG_HAP_LINUX_SPLICE)
-	if (b->to_forward && b->flags & BF_KERN_SPLICING) {
+	if (b->to_forward >= MIN_SPLICE_FORWARD && b->flags & BF_KERN_SPLICING) {
 
 		/* Under Linux, if FD_POLL_HUP is set, we have reached the end.
 		 * Since older splice() implementations were buggy and returned
@@ -341,8 +341,10 @@ int stream_sock_read(int fd) {
 				b->flags &= ~BF_OUT_EMPTY;
 			}
 
-			if (fdtab[fd].state == FD_STCONN)
+			if (fdtab[fd].state == FD_STCONN) {
 				fdtab[fd].state = FD_STREADY;
+				si->exp = TICK_ETERNITY;
+			}
 
 			b->flags |= BF_READ_PARTIAL;
 
@@ -467,8 +469,14 @@ int stream_sock_read(int fd) {
 	} /* while (1) */
 
  out_wakeup:
-	/* We might have some data the consumer is waiting for */
-	if (!(b->flags & BF_OUT_EMPTY) && (b->cons->flags & SI_FL_WAIT_DATA)) {
+	/* We might have some data the consumer is waiting for.
+	 * We can do fast-forwarding, but we avoid doing this for partial
+	 * buffers, because it is very likely that it will be done again
+	 * immediately afterwards once the following data is parsed (eg:
+	 * HTTP chunking).
+	 */
+	if ((b->pipe || b->send_max == b->l)
+	    && (b->cons->flags & SI_FL_WAIT_DATA)) {
 		int last_len = b->pipe ? b->pipe->data : 0;
 
 		b->cons->chk_snd(b->cons);
@@ -601,15 +609,11 @@ static int stream_sock_write_loop(struct stream_interface *si, struct buffer *b)
 		if (MSG_NOSIGNAL && MSG_MORE) {
 			unsigned int send_flag = MSG_DONTWAIT | MSG_NOSIGNAL;
 
-			if (((b->to_forward && b->to_forward != BUF_INFINITE_FORWARD) ||
-			     ((b->flags & (BF_SHUTW|BF_SHUTW_NOW|BF_HIJACK)) == BF_SHUTW_NOW && (max == b->send_max)) ||
-			     (max != b->l && max != b->send_max))
-			    && (fdtab[si->fd].flags & FD_FL_TCP)) {
-				send_flag |= MSG_MORE;
-			}
-			else if (b->flags & BF_EXPECT_MORE) {
-				/* it was forced on the buffer, this flag is one-shoot */
-				b->flags &= ~BF_EXPECT_MORE;
+			if ((!(b->flags & BF_NEVER_WAIT) &&
+			    ((b->to_forward && b->to_forward != BUF_INFINITE_FORWARD) ||
+			     (b->flags & BF_EXPECT_MORE))) ||
+			    ((b->flags & (BF_SHUTW|BF_SHUTW_NOW|BF_HIJACK)) == BF_SHUTW_NOW && (max == b->send_max)) ||
+			    (max != b->l && max != b->send_max)) {
 				send_flag |= MSG_MORE;
 			}
 
@@ -618,10 +622,6 @@ static int stream_sock_write_loop(struct stream_interface *si, struct buffer *b)
 				send_flag &= ~MSG_MORE;
 
 			ret = send(si->fd, b->w, max, send_flag);
-
-			/* disable it only once everything has been sent */
-			if (ret == max && (b->flags & BF_SEND_DONTWAIT))
-				b->flags &= ~BF_SEND_DONTWAIT;
 		} else {
 			int skerr;
 			socklen_t lskerr = sizeof(skerr);
@@ -634,8 +634,10 @@ static int stream_sock_write_loop(struct stream_interface *si, struct buffer *b)
 		}
 
 		if (ret > 0) {
-			if (fdtab[si->fd].state == FD_STCONN)
+			if (fdtab[si->fd].state == FD_STCONN) {
 				fdtab[si->fd].state = FD_STREADY;
+				si->exp = TICK_ETERNITY;
+			}
 
 			b->flags |= BF_WRITE_PARTIAL;
 
@@ -653,6 +655,8 @@ static int stream_sock_write_loop(struct stream_interface *si, struct buffer *b)
 
 			b->send_max -= ret;
 			if (!b->send_max) {
+				/* Always clear both flags once everything has been sent, they're one-shot */
+				b->flags &= ~(BF_EXPECT_MORE | BF_SEND_DONTWAIT);
 				if (likely(!b->pipe))
 					b->flags |= BF_OUT_EMPTY;
 				break;
@@ -738,6 +742,7 @@ int stream_sock_write(int fd)
 			 */
 			b->flags |= BF_WRITE_NULL;
 			fdtab[fd].state = FD_STREADY;
+			si->exp = TICK_ETERNITY;
 		}
 
 		/* Funny, we were called to write something but there wasn't
