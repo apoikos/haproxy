@@ -9,9 +9,21 @@ Homepage: http://haproxy.1wt.eu/
 Package: haproxy
 Architecture: any
 Depends: ${shlibs:Depends}, ${misc:Depends}, adduser
+Suggests: vim-haproxy
 Description: fast and reliable load balancing reverse proxy
  HAProxy is a TCP/HTTP reverse proxy which is particularly suited for high
  availability environments. It features connection persistence through HTTP
  cookies, load balancing, header addition, modification, deletion both ways. It
  has request blocking capabilities and provides interface to display server
  status.
+
+Package: vim-haproxy
+Architecture: all
+Depends: ${misc:Depends}
+Recommends: vim-addon-manager
+Description: syntax highlighting for HAProxy configuration files
+ The vim-haproxy package provides filetype detection and syntax highlighting
+ for HAProxy configuration files.
+ .
+ As per the Debian vim policy, installed addons are not activated
+ automatically, but the "vim-addon-manager" tool can be used for this purpose.
