@@ -377,7 +377,7 @@ int event_accept(int fd) {
 					      pn, ntohs(((struct sockaddr_in6 *)(&s->cli_addr))->sin6_port));
 			}
 
-			write(1, trash, len);
+			if (write(1, trash, len) < 0) /* shut gcc warning */;
 		}
 
 		if ((s->req = pool_alloc2(pool2_buffer)) == NULL)
@@ -416,6 +416,11 @@ int event_accept(int fd) {
 		s->rep->cons = &s->si[0];
 		s->si[0].ob = s->si[1].ib = s->rep;
 		s->rep->analysers = 0;
+
+		if (s->fe->options2 & PR_O2_NODELAY) {
+			s->req->flags |= BF_NEVER_WAIT;
+			s->rep->flags |= BF_NEVER_WAIT;
+		}
 
 		s->rep->rto = s->be->timeout.server;
 		s->rep->wto = s->fe->timeout.client;

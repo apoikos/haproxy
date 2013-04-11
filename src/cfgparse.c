@@ -151,6 +151,7 @@ static const struct cfg_opt cfg_opts2[] =
 	{ "independant-streams",          PR_O2_INDEPSTR,  PR_CAP_FE|PR_CAP_BE, 0, 0 },
 	{ "http-use-proxy-header",        PR_O2_USE_PXHDR, PR_CAP_FE, 0, PR_MODE_HTTP },
 	{ "http-pretend-keepalive",       PR_O2_FAKE_KA,   PR_CAP_FE|PR_CAP_BE, 0, PR_MODE_HTTP },
+	{ "http-no-delay",                PR_O2_NODELAY,   PR_CAP_FE|PR_CAP_BE, 0, PR_MODE_HTTP },
 	{ NULL, 0, 0, 0 }
 };
 
@@ -511,6 +512,8 @@ int cfg_parse_global(const char *file, int linenum, char **args, int kwm)
 		global.tune.bufsize = atol(args[1]);
 		if (global.tune.maxrewrite >= global.tune.bufsize / 2)
 			global.tune.maxrewrite = global.tune.bufsize / 2;
+		trashlen = global.tune.bufsize;
+		trash = realloc(trash, trashlen);
 	}
 	else if (!strcmp(args[0], "tune.maxrewrite")) {
 		if (*(args[1]) == 0) {
@@ -904,9 +907,9 @@ int cfg_parse_global(const char *file, int linenum, char **args, int kwm)
 					continue;
 				if (strcmp(kwl->kw[index].kw, args[0]) == 0) {
 					/* prepare error message just in case */
-					snprintf(trash, sizeof(trash),
+					snprintf(trash, trashlen,
 						 "error near '%s' in '%s' section", args[0], "global");
-					rc = kwl->kw[index].parse(args, CFG_GLOBAL, NULL, NULL, trash, sizeof(trash));
+					rc = kwl->kw[index].parse(args, CFG_GLOBAL, NULL, NULL, trash, trashlen);
 					if (rc < 0) {
 						Alert("parsing [%s:%d] : %s\n", file, linenum, trash);
 						err_code |= ERR_ALERT | ERR_FATAL;
@@ -1133,7 +1136,7 @@ int cfg_parse_listen(const char *file, int linenum, char **args, int kwm)
 		init_new_proxy(curproxy);
 		curproxy->next = proxy;
 		proxy = curproxy;
-		curproxy->conf.file = file;
+		curproxy->conf.file = strdup(file);
 		curproxy->conf.line = linenum;
 		curproxy->last_change = now.tv_sec;
 		curproxy->id = strdup(args[1]);
@@ -1181,6 +1184,11 @@ int cfg_parse_listen(const char *file, int linenum, char **args, int kwm)
 			curproxy->orgto_hdr_name = strdup(defproxy.orgto_hdr_name);
 		}
 
+		if (defproxy.server_id_hdr_len) {
+			curproxy->server_id_hdr_len  = defproxy.server_id_hdr_len;
+			curproxy->server_id_hdr_name = strdup(defproxy.server_id_hdr_name);
+		}
+
 		if (curproxy->cap & PR_CAP_FE) {
 			curproxy->maxconn = defproxy.maxconn;
 			curproxy->backlog = defproxy.backlog;
@@ -1203,6 +1211,16 @@ int cfg_parse_listen(const char *file, int linenum, char **args, int kwm)
 			}
 			curproxy->check_len = defproxy.check_len;
 
+			if (defproxy.expect_str) {
+				curproxy->expect_str = strdup(defproxy.expect_str);
+				if (defproxy.expect_regex) {
+					/* note: this regex is known to be valid */
+					curproxy->expect_regex = calloc(1, sizeof(regex_t));
+					regcomp(curproxy->expect_regex, defproxy.expect_str, REG_EXTENDED);
+				}
+			}
+
+			curproxy->ck_opts = defproxy.ck_opts;
 			if (defproxy.cookie_name)
 				curproxy->cookie_name = strdup(defproxy.cookie_name);
 			curproxy->cookie_len = defproxy.cookie_len;
@@ -1300,6 +1318,10 @@ int cfg_parse_listen(const char *file, int linenum, char **args, int kwm)
 		defproxy.fwdfor_hdr_len = 0;
 		free(defproxy.orgto_hdr_name);
 		defproxy.orgto_hdr_len = 0;
+		free(defproxy.server_id_hdr_name);
+		defproxy.server_id_hdr_len = 0;
+		free(defproxy.expect_str);
+		if (defproxy.expect_regex) regfree(defproxy.expect_regex);
 
 		for (rc = 0; rc < HTTP_ERR_SIZE; rc++)
 			chunk_destroy(&defproxy.errmsg[rc]);
@@ -1688,8 +1710,7 @@ int cfg_parse_listen(const char *file, int linenum, char **args, int kwm)
 			goto out;
 		}
 
-		curproxy->options &= ~PR_O_COOK_ANY;
-		curproxy->options2 &= ~PR_O2_COOK_PSV;
+		curproxy->ck_opts = 0;
 		curproxy->cookie_maxidle = curproxy->cookie_maxlife = 0;
 		free(curproxy->cookie_domain); curproxy->cookie_domain = NULL;
 		free(curproxy->cookie_name);
@@ -1699,25 +1720,31 @@ int cfg_parse_listen(const char *file, int linenum, char **args, int kwm)
 		cur_arg = 2;
 		while (*(args[cur_arg])) {
 			if (!strcmp(args[cur_arg], "rewrite")) {
-				curproxy->options |= PR_O_COOK_RW;
+				curproxy->ck_opts |= PR_CK_RW;
 			}
 			else if (!strcmp(args[cur_arg], "indirect")) {
-				curproxy->options |= PR_O_COOK_IND;
+				curproxy->ck_opts |= PR_CK_IND;
 			}
 			else if (!strcmp(args[cur_arg], "insert")) {
-				curproxy->options |= PR_O_COOK_INS;
+				curproxy->ck_opts |= PR_CK_INS;
 			}
 			else if (!strcmp(args[cur_arg], "nocache")) {
-				curproxy->options |= PR_O_COOK_NOC;
+				curproxy->ck_opts |= PR_CK_NOC;
 			}
 			else if (!strcmp(args[cur_arg], "postonly")) {
-				curproxy->options |= PR_O_COOK_POST;
+				curproxy->ck_opts |= PR_CK_POST;
 			}
 			else if (!strcmp(args[cur_arg], "preserve")) {
-				curproxy->options2 |= PR_O2_COOK_PSV;
+				curproxy->ck_opts |= PR_CK_PSV;
 			}
 			else if (!strcmp(args[cur_arg], "prefix")) {
-				curproxy->options |= PR_O_COOK_PFX;
+				curproxy->ck_opts |= PR_CK_PFX;
+			}
+			else if (!strcmp(args[cur_arg], "httponly")) {
+				curproxy->ck_opts |= PR_CK_HTTPONLY;
+			}
+			else if (!strcmp(args[cur_arg], "secure")) {
+				curproxy->ck_opts |= PR_CK_SECURE;
 			}
 			else if (!strcmp(args[cur_arg], "domain")) {
 				if (!*args[cur_arg + 1]) {
@@ -1811,19 +1838,19 @@ int cfg_parse_listen(const char *file, int linenum, char **args, int kwm)
 			}
 			cur_arg++;
 		}
-		if (!POWEROF2(curproxy->options & (PR_O_COOK_RW|PR_O_COOK_IND))) {
+		if (!POWEROF2(curproxy->ck_opts & (PR_CK_RW|PR_CK_IND))) {
 			Alert("parsing [%s:%d] : cookie 'rewrite' and 'indirect' modes are incompatible.\n",
 			      file, linenum);
 			err_code |= ERR_ALERT | ERR_FATAL;
 		}
 
-		if (!POWEROF2(curproxy->options & (PR_O_COOK_RW|PR_O_COOK_INS|PR_O_COOK_PFX))) {
+		if (!POWEROF2(curproxy->ck_opts & (PR_CK_RW|PR_CK_INS|PR_CK_PFX))) {
 			Alert("parsing [%s:%d] : cookie 'rewrite', 'insert' and 'prefix' modes are incompatible.\n",
 			      file, linenum);
 			err_code |= ERR_ALERT | ERR_FATAL;
 		}
 
-		if ((curproxy->options2 & PR_O2_COOK_PSV) && !(curproxy->options & (PR_O_COOK_INS|PR_O_COOK_IND))) {
+		if ((curproxy->ck_opts & (PR_CK_PSV | PR_CK_INS | PR_CK_IND)) == PR_CK_PSV) {
 			Alert("parsing [%s:%d] : cookie 'preserve' requires at least 'insert' or 'indirect'.\n",
 			      file, linenum);
 			err_code |= ERR_ALERT | ERR_FATAL;
@@ -2072,6 +2099,23 @@ int cfg_parse_listen(const char *file, int linenum, char **args, int kwm)
 		err_code |= warnif_cond_requires_resp(req_acl->cond, file, linenum);
 		LIST_ADDQ(&curproxy->req_acl, &req_acl->list);
 	}
+	else if (!strcmp(args[0], "http-send-name-header")) { /* send server name in request header */
+		/* set the header name and length into the proxy structure */
+		if (warnifnotcap(curproxy, PR_CAP_BE, file, linenum, args[0], NULL))
+			err_code |= ERR_WARN;
+
+		if (!*args[1]) {
+			Alert("parsing [%s:%d] : '%s' requires a header string.\n",
+			      file, linenum, args[0]);
+			err_code |= ERR_ALERT | ERR_FATAL;
+			goto out;
+		}
+
+		/* set the desired header name */
+		free(curproxy->server_id_hdr_name);
+		curproxy->server_id_hdr_name = strdup(args[1]);
+		curproxy->server_id_hdr_len  = strlen(curproxy->server_id_hdr_name);
+	}
 	else if (!strcmp(args[0], "block")) {  /* early blocking based on ACLs */
 		if (curproxy == &defproxy) {
 			Alert("parsing [%s:%d] : '%s' not allowed in 'defaults' section.\n", file, linenum, args[0]);
@@ -2171,9 +2215,9 @@ int cfg_parse_listen(const char *file, int linenum, char **args, int kwm)
 				}
 				cur_arg++;
 				code = atol(args[cur_arg]);
-				if (code < 301 || code > 303) {
-					Alert("parsing [%s:%d] : '%s': unsupported HTTP code '%d'.\n",
-					      file, linenum, args[0], code);
+				if (code < 301 || code > 308 || (code > 303 && code < 307)) {
+					Alert("parsing [%s:%d] : '%s': unsupported HTTP code '%s' (must be one of 301, 302, 303, 307 or 308).\n",
+					      file, linenum, args[0], args[cur_arg]);
 					err_code |= ERR_ALERT | ERR_FATAL;
 					goto out;
 				}
@@ -2932,6 +2976,7 @@ stats_error_parsing:
 							((unsigned char) (packetlen >> 16) & 0xff));
 
 						curproxy->check_req[3] = 1;
+						curproxy->check_req[5] = 128;
 						curproxy->check_req[8] = 1;
 						memcpy(&curproxy->check_req[9], mysqluser, userlen);
 						curproxy->check_req[9 + userlen + 1 + 1]     = 1;
@@ -2969,6 +3014,7 @@ stats_error_parsing:
 			 */
 
 			curproxy->options |= PR_O_FWDFOR;
+			curproxy->options2 |= PR_O2_FF_ALWAYS;
 
 			free(curproxy->fwdfor_hdr_name);
 			curproxy->fwdfor_hdr_name = strdup(DEF_XFORWARDFOR_HDR);
@@ -3000,9 +3046,12 @@ stats_error_parsing:
 					curproxy->fwdfor_hdr_name = strdup(args[cur_arg+1]);
 					curproxy->fwdfor_hdr_len  = strlen(curproxy->fwdfor_hdr_name);
 					cur_arg += 2;
+				} else if (!strcmp(args[cur_arg], "if-none")) {
+					curproxy->options2 &= ~PR_O2_FF_ALWAYS;
+					cur_arg += 1;
 				} else {
 					/* unknown suboption - catchall */
-					Alert("parsing [%s:%d] : '%s %s' only supports optional values: 'except' and 'header'.\n",
+					Alert("parsing [%s:%d] : '%s %s' only supports optional values: 'except', 'header' and 'if-none'.\n",
 					      file, linenum, args[0], args[1]);
 					err_code |= ERR_ALERT | ERR_FATAL;
 					goto out;
@@ -3022,7 +3071,7 @@ stats_error_parsing:
 			curproxy->orgto_hdr_name = strdup(DEF_XORIGINALTO_HDR);
 			curproxy->orgto_hdr_len  = strlen(DEF_XORIGINALTO_HDR);
 
-			/* loop to go through arguments - start at 2, since 0+1 = "option" "forwardfor" */
+			/* loop to go through arguments - start at 2, since 0+1 = "option" "originalto" */
 			cur_arg = 2;
 			while (*(args[cur_arg])) {
 				if (!strcmp(args[cur_arg], "except")) {
@@ -3130,6 +3179,7 @@ stats_error_parsing:
 					goto out;
 				}
 				curproxy->options2 |= PR_O2_EXP_STS;
+				free(curproxy->expect_str);
 				curproxy->expect_str = strdup(args[cur_arg + 1]);
 			}
 			else if (strcmp(ptr_arg, "string") == 0) {
@@ -3140,6 +3190,7 @@ stats_error_parsing:
 					goto out;
 				}
 				curproxy->options2 |= PR_O2_EXP_STR;
+				free(curproxy->expect_str);
 				curproxy->expect_str = strdup(args[cur_arg + 1]);
 			}
 			else if (strcmp(ptr_arg, "rstatus") == 0) {
@@ -3150,6 +3201,9 @@ stats_error_parsing:
 					goto out;
 				}
 				curproxy->options2 |= PR_O2_EXP_RSTS;
+				free(curproxy->expect_str);
+				if (curproxy->expect_regex) regfree(curproxy->expect_regex);
+				curproxy->expect_str = strdup(args[cur_arg + 1]);
 				curproxy->expect_regex = calloc(1, sizeof(regex_t));
 				if (regcomp(curproxy->expect_regex, args[cur_arg + 1], REG_EXTENDED) != 0) {
 					Alert("parsing [%s:%d] : '%s %s %s' : bad regular expression '%s'.\n",
@@ -3166,6 +3220,9 @@ stats_error_parsing:
 					goto out;
 				}
 				curproxy->options2 |= PR_O2_EXP_RSTR;
+				free(curproxy->expect_str);
+				if (curproxy->expect_regex) regfree(curproxy->expect_regex);
+				curproxy->expect_str = strdup(args[cur_arg + 1]);
 				curproxy->expect_regex = calloc(1, sizeof(regex_t));
 				if (regcomp(curproxy->expect_regex, args[cur_arg + 1], REG_EXTENDED) != 0) {
 					Alert("parsing [%s:%d] : '%s %s %s' : bad regular expression '%s'.\n",
@@ -3182,7 +3239,7 @@ stats_error_parsing:
 			}
 		}
 		else {
-			Alert("parsing [%s:%d] : '%s' only supports 'disable-on-404', 'expect' .\n", file, linenum, args[0]);
+			Alert("parsing [%s:%d] : '%s' only supports 'disable-on-404', 'send-state', 'expect'.\n", file, linenum, args[0]);
 			err_code |= ERR_ALERT | ERR_FATAL;
 			goto out;
 		}
@@ -3302,7 +3359,7 @@ stats_error_parsing:
 			err_code |= ERR_WARN;
 
 		memcpy(trash, "error near 'balance'", 21);
-		if (backend_parse_balance((const char **)args + 1, trash, sizeof(trash), curproxy) < 0) {
+		if (backend_parse_balance((const char **)args + 1, trash, trashlen, curproxy) < 0) {
 			Alert("parsing [%s:%d] : %s\n", file, linenum, trash);
 			err_code |= ERR_ALERT | ERR_FATAL;
 			goto out;
@@ -3368,7 +3425,7 @@ stats_error_parsing:
 			newsrv->next = curproxy->srv;
 			curproxy->srv = newsrv;
 			newsrv->proxy = curproxy;
-			newsrv->conf.file = file;
+			newsrv->conf.file = strdup(file);
 			newsrv->conf.line = linenum;
 
 			LIST_INIT(&newsrv->pendconns);
@@ -3609,12 +3666,6 @@ stats_error_parsing:
 				if (err) {
 					Alert("parsing [%s:%d] : unexpected character '%c' in 'slowstart' argument of server %s.\n",
 					      file, linenum, *err, newsrv->id);
-					err_code |= ERR_ALERT | ERR_FATAL;
-					goto out;
-				}
-				if (val < 0) {
-					Alert("parsing [%s:%d]: invalid value %d for argument '%s' of server %s.\n",
-					      file, linenum, val, args[cur_arg], newsrv->id);
 					err_code |= ERR_ALERT | ERR_FATAL;
 					goto out;
 				}
@@ -4529,9 +4580,9 @@ stats_error_parsing:
 					continue;
 				if (strcmp(kwl->kw[index].kw, args[0]) == 0) {
 					/* prepare error message just in case */
-					snprintf(trash, sizeof(trash),
+					snprintf(trash, trashlen,
 						 "error near '%s' in %s section", args[0], cursection);
-					rc = kwl->kw[index].parse(args, CFG_LISTEN, curproxy, &defproxy, trash, sizeof(trash));
+					rc = kwl->kw[index].parse(args, CFG_LISTEN, curproxy, &defproxy, trash, trashlen);
 					if (rc < 0) {
 						Alert("parsing [%s:%d] : %s\n", file, linenum, trash);
 						err_code |= ERR_ALERT | ERR_FATAL;
@@ -5007,11 +5058,6 @@ int check_config_validity()
 
 		case PR_MODE_HTTP:
 			curproxy->acl_requires |= ACL_USE_L7_ANY;
-			if ((curproxy->cookie_name != NULL) && (curproxy->srv == NULL)) {
-				Alert("config : HTTP proxy %s has a cookie but no server list !\n",
-				      curproxy->id);
-				cfgerr++;
-			}
 			break;
 		}
 
@@ -5310,14 +5356,33 @@ out_uri_auth_compat:
 		}
 
 		/* The small pools required for the capture lists */
-		if (curproxy->nb_req_cap)
-			curproxy->req_cap_pool = create_pool("ptrcap",
-							     curproxy->nb_req_cap * sizeof(char *),
-							     MEM_F_SHARED);
-		if (curproxy->nb_rsp_cap)
-			curproxy->rsp_cap_pool = create_pool("ptrcap",
-							     curproxy->nb_rsp_cap * sizeof(char *),
-							     MEM_F_SHARED);
+		if (curproxy->nb_req_cap) {
+			if (curproxy->mode == PR_MODE_HTTP) {
+				curproxy->req_cap_pool = create_pool("ptrcap",
+								     curproxy->nb_req_cap * sizeof(char *),
+								     MEM_F_SHARED);
+			} else {
+				Warning("config : 'capture request header' ignored for %s '%s' as it requires HTTP mode.\n",
+					proxy_type_str(curproxy), curproxy->id);
+				err_code |= ERR_WARN;
+				curproxy->to_log &= ~LW_REQHDR;
+				curproxy->nb_req_cap = 0;
+			}
+		}
+
+		if (curproxy->nb_rsp_cap) {
+			if (curproxy->mode == PR_MODE_HTTP) {
+				curproxy->rsp_cap_pool = create_pool("ptrcap",
+								     curproxy->nb_rsp_cap * sizeof(char *),
+								     MEM_F_SHARED);
+			} else {
+				Warning("config : 'capture response header' ignored for %s '%s' as it requires HTTP mode.\n",
+					proxy_type_str(curproxy), curproxy->id);
+				err_code |= ERR_WARN;
+				curproxy->to_log &= ~LW_REQHDR;
+				curproxy->nb_rsp_cap = 0;
+			}
+		}
 
 		curproxy->hdr_idx_pool = create_pool("hdr_idx",
 						     MAX_HTTP_HDR * sizeof(struct hdr_idx_elem),
@@ -5361,132 +5426,6 @@ out_uri_auth_compat:
 
 		curproxy->lbprm.wmult = 1; /* default weight multiplier */
 		curproxy->lbprm.wdiv  = 1; /* default weight divider */
-
-		/* We have to initialize the server lookup mechanism depending
-		 * on what LB algorithm was choosen.
-		 */
-
-		curproxy->lbprm.algo &= ~(BE_LB_LKUP | BE_LB_PROP_DYN);
-		switch (curproxy->lbprm.algo & BE_LB_KIND) {
-		case BE_LB_KIND_RR:
-			if ((curproxy->lbprm.algo & BE_LB_PARM) == BE_LB_RR_STATIC) {
-				curproxy->lbprm.algo |= BE_LB_LKUP_MAP;
-				init_server_map(curproxy);
-			} else {
-				curproxy->lbprm.algo |= BE_LB_LKUP_RRTREE | BE_LB_PROP_DYN;
-				fwrr_init_server_groups(curproxy);
-			}
-			break;
-
-		case BE_LB_KIND_LC:
-			curproxy->lbprm.algo |= BE_LB_LKUP_LCTREE | BE_LB_PROP_DYN;
-			fwlc_init_server_tree(curproxy);
-			break;
-
-		case BE_LB_KIND_HI:
-			if ((curproxy->lbprm.algo & BE_LB_HASH_TYPE) == BE_LB_HASH_CONS) {
-				curproxy->lbprm.algo |= BE_LB_LKUP_CHTREE | BE_LB_PROP_DYN;
-				chash_init_server_tree(curproxy);
-			} else {
-				curproxy->lbprm.algo |= BE_LB_LKUP_MAP;
-				init_server_map(curproxy);
-			}
-			break;
-		}
-
-		if (curproxy->options & PR_O_LOGASAP)
-			curproxy->to_log &= ~LW_BYTES;
-
-		if ((curproxy->mode == PR_MODE_TCP || curproxy->mode == PR_MODE_HTTP) &&
-		    (curproxy->cap & PR_CAP_FE) && curproxy->to_log && curproxy->logfac1 < 0) {
-			Warning("config : log format ignored for %s '%s' since it has no log address.\n",
-				proxy_type_str(curproxy), curproxy->id);
-			err_code |= ERR_WARN;
-		}
-
-		if (curproxy->mode != PR_MODE_HTTP) {
-			int optnum;
-
-			if (curproxy->options & PR_O_COOK_ANY) {
-				Warning("config : 'cookie' statement ignored for %s '%s' as it requires HTTP mode.\n",
-					proxy_type_str(curproxy), curproxy->id);
-				err_code |= ERR_WARN;
-			}
-
-			if (curproxy->uri_auth) {
-				Warning("config : 'stats' statement ignored for %s '%s' as it requires HTTP mode.\n",
-					proxy_type_str(curproxy), curproxy->id);
-				err_code |= ERR_WARN;
-				curproxy->uri_auth = NULL;
-			}
-
-			if (curproxy->options & PR_O_FWDFOR) {
-				Warning("config : 'option %s' ignored for %s '%s' as it requires HTTP mode.\n",
-					"forwardfor", proxy_type_str(curproxy), curproxy->id);
-				err_code |= ERR_WARN;
-				curproxy->options &= ~PR_O_FWDFOR;
-			}
-
-			if (curproxy->options & PR_O_ORGTO) {
-				Warning("config : 'option %s' ignored for %s '%s' as it requires HTTP mode.\n",
-					"originalto", proxy_type_str(curproxy), curproxy->id);
-				err_code |= ERR_WARN;
-				curproxy->options &= ~PR_O_ORGTO;
-			}
-
-			for (optnum = 0; cfg_opts[optnum].name; optnum++) {
-				if (cfg_opts[optnum].mode == PR_MODE_HTTP &&
-				    (curproxy->cap & cfg_opts[optnum].cap) &&
-				    (curproxy->options & cfg_opts[optnum].val)) {
-					Warning("config : 'option %s' ignored for %s '%s' as it requires HTTP mode.\n",
-						cfg_opts[optnum].name, proxy_type_str(curproxy), curproxy->id);
-					err_code |= ERR_WARN;
-					curproxy->options &= ~cfg_opts[optnum].val;
-				}
-			}
-
-			for (optnum = 0; cfg_opts2[optnum].name; optnum++) {
-				if (cfg_opts2[optnum].mode == PR_MODE_HTTP &&
-				    (curproxy->cap & cfg_opts2[optnum].cap) &&
-				    (curproxy->options2 & cfg_opts2[optnum].val)) {
-					Warning("config : 'option %s' ignored for %s '%s' as it requires HTTP mode.\n",
-						cfg_opts2[optnum].name, proxy_type_str(curproxy), curproxy->id);
-					err_code |= ERR_WARN;
-					curproxy->options2 &= ~cfg_opts2[optnum].val;
-				}
-			}
-
-#if defined(CONFIG_HAP_CTTPROXY) || defined(CONFIG_HAP_LINUX_TPROXY)
-			if (curproxy->bind_hdr_occ) {
-				curproxy->bind_hdr_occ = 0;
-				Warning("config : %s '%s' : ignoring use of header %s as source IP in non-HTTP mode.\n",
-					proxy_type_str(curproxy), curproxy->id, curproxy->bind_hdr_name);
-				err_code |= ERR_WARN;
-			}
-#endif
-		}
-
-		/*
-		 * ensure that we're not cross-dressing a TCP server into HTTP.
-		 */
-		newsrv = curproxy->srv;
-		while (newsrv != NULL) {
-			if ((curproxy->mode != PR_MODE_HTTP) && (newsrv->rdr_len || newsrv->cklen)) {
-				Alert("config : %s '%s' : server cannot have cookie or redirect prefix in non-HTTP mode.\n",
-				      proxy_type_str(curproxy), curproxy->id);
-				cfgerr++;
-			}
-
-#if defined(CONFIG_HAP_CTTPROXY) || defined(CONFIG_HAP_LINUX_TPROXY)
-			if (curproxy->mode != PR_MODE_HTTP && newsrv->bind_hdr_occ) {
-				newsrv->bind_hdr_occ = 0;
-				Warning("config : %s '%s' : server %s cannot use header %s as source IP in non-HTTP mode.\n",
-					proxy_type_str(curproxy), curproxy->id, newsrv->id, newsrv->bind_hdr_name);
-				err_code |= ERR_WARN;
-			}
-#endif
-			newsrv = newsrv->next;
-		}
 
 		/*
 		 * If this server supports a maxconn parameter, it needs a dedicated
@@ -5565,13 +5504,148 @@ out_uri_auth_compat:
 					goto next_srv;
 				}
 
+				/* if the other server is forced disabled, we have to do the same here */
+				if (srv->state & SRV_MAINTAIN) {
+					newsrv->state |= SRV_MAINTAIN;
+					newsrv->state &= ~SRV_RUNNING;
+					newsrv->health = 0;
+				}
+
 				newsrv->tracked = srv;
 				newsrv->tracknext = srv->tracknext;
 				srv->tracknext = newsrv;
 
 				free(newsrv->trackit);
+				newsrv->trackit = NULL;
 			}
 		next_srv:
+			newsrv = newsrv->next;
+		}
+
+		/* We have to initialize the server lookup mechanism depending
+		 * on what LB algorithm was choosen.
+		 */
+
+		curproxy->lbprm.algo &= ~(BE_LB_LKUP | BE_LB_PROP_DYN);
+		switch (curproxy->lbprm.algo & BE_LB_KIND) {
+		case BE_LB_KIND_RR:
+			if ((curproxy->lbprm.algo & BE_LB_PARM) == BE_LB_RR_STATIC) {
+				curproxy->lbprm.algo |= BE_LB_LKUP_MAP;
+				init_server_map(curproxy);
+			} else {
+				curproxy->lbprm.algo |= BE_LB_LKUP_RRTREE | BE_LB_PROP_DYN;
+				fwrr_init_server_groups(curproxy);
+			}
+			break;
+
+		case BE_LB_KIND_LC:
+			curproxy->lbprm.algo |= BE_LB_LKUP_LCTREE | BE_LB_PROP_DYN;
+			fwlc_init_server_tree(curproxy);
+			break;
+
+		case BE_LB_KIND_HI:
+			if ((curproxy->lbprm.algo & BE_LB_HASH_TYPE) == BE_LB_HASH_CONS) {
+				curproxy->lbprm.algo |= BE_LB_LKUP_CHTREE | BE_LB_PROP_DYN;
+				chash_init_server_tree(curproxy);
+			} else {
+				curproxy->lbprm.algo |= BE_LB_LKUP_MAP;
+				init_server_map(curproxy);
+			}
+			break;
+		}
+
+		if (curproxy->options & PR_O_LOGASAP)
+			curproxy->to_log &= ~LW_BYTES;
+
+		if ((curproxy->mode == PR_MODE_TCP || curproxy->mode == PR_MODE_HTTP) &&
+		    (curproxy->cap & PR_CAP_FE) && curproxy->to_log && curproxy->logfac1 < 0) {
+			Warning("config : log format ignored for %s '%s' since it has no log address.\n",
+				proxy_type_str(curproxy), curproxy->id);
+			err_code |= ERR_WARN;
+		}
+
+		if (curproxy->mode != PR_MODE_HTTP) {
+			int optnum;
+
+			if (curproxy->uri_auth) {
+				Warning("config : 'stats' statement ignored for %s '%s' as it requires HTTP mode.\n",
+					proxy_type_str(curproxy), curproxy->id);
+				err_code |= ERR_WARN;
+				curproxy->uri_auth = NULL;
+			}
+
+			if (curproxy->options & PR_O_FWDFOR) {
+				Warning("config : 'option %s' ignored for %s '%s' as it requires HTTP mode.\n",
+					"forwardfor", proxy_type_str(curproxy), curproxy->id);
+				err_code |= ERR_WARN;
+				curproxy->options &= ~PR_O_FWDFOR;
+				curproxy->options2 &= ~PR_O2_FF_ALWAYS;
+			}
+
+			if (curproxy->options & PR_O_ORGTO) {
+				Warning("config : 'option %s' ignored for %s '%s' as it requires HTTP mode.\n",
+					"originalto", proxy_type_str(curproxy), curproxy->id);
+				err_code |= ERR_WARN;
+				curproxy->options &= ~PR_O_ORGTO;
+			}
+
+			for (optnum = 0; cfg_opts[optnum].name; optnum++) {
+				if (cfg_opts[optnum].mode == PR_MODE_HTTP &&
+				    (curproxy->cap & cfg_opts[optnum].cap) &&
+				    (curproxy->options & cfg_opts[optnum].val)) {
+					Warning("config : 'option %s' ignored for %s '%s' as it requires HTTP mode.\n",
+						cfg_opts[optnum].name, proxy_type_str(curproxy), curproxy->id);
+					err_code |= ERR_WARN;
+					curproxy->options &= ~cfg_opts[optnum].val;
+				}
+			}
+
+			for (optnum = 0; cfg_opts2[optnum].name; optnum++) {
+				if (cfg_opts2[optnum].mode == PR_MODE_HTTP &&
+				    (curproxy->cap & cfg_opts2[optnum].cap) &&
+				    (curproxy->options2 & cfg_opts2[optnum].val)) {
+					Warning("config : 'option %s' ignored for %s '%s' as it requires HTTP mode.\n",
+						cfg_opts2[optnum].name, proxy_type_str(curproxy), curproxy->id);
+					err_code |= ERR_WARN;
+					curproxy->options2 &= ~cfg_opts2[optnum].val;
+				}
+			}
+
+#if defined(CONFIG_HAP_CTTPROXY) || defined(CONFIG_HAP_LINUX_TPROXY)
+			if (curproxy->bind_hdr_occ) {
+				curproxy->bind_hdr_occ = 0;
+				Warning("config : %s '%s' : ignoring use of header %s as source IP in non-HTTP mode.\n",
+					proxy_type_str(curproxy), curproxy->id, curproxy->bind_hdr_name);
+				err_code |= ERR_WARN;
+			}
+#endif
+		}
+
+		/*
+		 * ensure that we're not cross-dressing a TCP server into HTTP.
+		 */
+		newsrv = curproxy->srv;
+		while (newsrv != NULL) {
+			if ((curproxy->mode != PR_MODE_HTTP) && newsrv->rdr_len) {
+				Alert("config : %s '%s' : server cannot have cookie or redirect prefix in non-HTTP mode.\n",
+				      proxy_type_str(curproxy), curproxy->id);
+				cfgerr++;
+			}
+
+			if ((curproxy->mode != PR_MODE_HTTP) && newsrv->cklen) {
+				Warning("config : %s '%s' : ignoring cookie for server '%s' as HTTP mode is disabled.\n",
+				        proxy_type_str(curproxy), curproxy->id, newsrv->id);
+				err_code |= ERR_WARN;
+			}
+
+#if defined(CONFIG_HAP_CTTPROXY) || defined(CONFIG_HAP_LINUX_TPROXY)
+			if (curproxy->mode != PR_MODE_HTTP && newsrv->bind_hdr_occ) {
+				newsrv->bind_hdr_occ = 0;
+				Warning("config : %s '%s' : server %s cannot use header %s as source IP in non-HTTP mode.\n",
+					proxy_type_str(curproxy), curproxy->id, newsrv->id, newsrv->bind_hdr_name);
+				err_code |= ERR_WARN;
+			}
+#endif
 			newsrv = newsrv->next;
 		}
 

@@ -216,7 +216,7 @@ __ebmb_insert(struct eb_root *root, struct ebmb_node *new, unsigned int len)
 	struct ebmb_node *old;
 	unsigned int side;
 	eb_troot_t *troot, **up_ptr;
-	eb_troot_t *root_right = root;
+	eb_troot_t *root_right;
 	int diff;
 	int bit;
 	eb_troot_t *new_left, *new_rght;
@@ -306,12 +306,16 @@ __ebmb_insert(struct eb_root *root, struct ebmb_node *new, unsigned int len)
 	new_rght = eb_dotag(&new->node.branches, EB_RGHT);
 	new_leaf = eb_dotag(&new->node.branches, EB_LEAF);
 
-	/* Note: we can compare more bits than
-	 * the current node's because as long as they are identical, we
-	 * know we descend along the correct side.
-	 */
 	new->node.bit = bit;
-	diff = cmp_bits(new->key, old->key, bit);
+
+	/* Note: we can compare more bits than the current node's because as
+	 * long as they are identical, we know we descend along the correct
+	 * side. However we don't want to start to compare past the end.
+	 */
+	diff = 0;
+	if (((unsigned)bit >> 3) < len)
+		diff = cmp_bits(new->key, old->key, bit);
+
 	if (diff == 0) {
 		new->node.bit = -1; /* mark as new dup tree, just in case */
 
@@ -527,7 +531,7 @@ static forceinline struct ebmb_node *__ebmb_lookup_prefix(struct eb_root *root, 
 			 * bits, let's compare prefixes and descend the cover
 			 * subtree if they match.
 			 */
-			if (node->node.bit >> 1 == pfx)
+			if ((unsigned short)node->node.bit >> 1 == pfx)
 				troot = node->node.branches.b[EB_LEFT];
 			else
 				troot = node->node.branches.b[EB_RGHT];
@@ -554,7 +558,7 @@ __ebmb_insert_prefix(struct eb_root *root, struct ebmb_node *new, unsigned int l
 	struct ebmb_node *old;
 	unsigned int side;
 	eb_troot_t *troot, **up_ptr;
-	eb_troot_t *root_right = root;
+	eb_troot_t *root_right;
 	int diff;
 	int bit;
 	eb_troot_t *new_left, *new_rght;

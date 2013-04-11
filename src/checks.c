@@ -235,7 +235,7 @@ static void set_server_check_status(struct server *s, short status, char *desc) 
 
 		int health, rise, fall, state;
 
-		chunk_init(&msg, trash, sizeof(trash));
+		chunk_init(&msg, trash, trashlen);
 
 		/* FIXME begin: calculate local version of the health/rise/fall/state */
 		health = s->health;
@@ -377,7 +377,8 @@ void set_server_down(struct server *s)
 
 		s->last_change = now.tv_sec;
 		s->state &= ~(SRV_RUNNING | SRV_GOINGDOWN);
-		s->proxy->lbprm.set_server_status_down(s);
+		if (s->proxy->lbprm.set_server_status_down)
+			s->proxy->lbprm.set_server_status_down(s);
 
 		/* we might have sessions queued on this server and waiting for
 		 * a connection. Those which are redispatchable will be queued
@@ -385,7 +386,7 @@ void set_server_down(struct server *s)
 		 */
 		xferred = redistribute_pending(s);
 
-		chunk_init(&msg, trash, sizeof(trash));
+		chunk_init(&msg, trash, trashlen);
 
 		if (s->state & SRV_MAINTAIN) {
 			chunk_printf(&msg,
@@ -428,6 +429,7 @@ void set_server_up(struct server *s) {
 	struct server *srv;
 	struct chunk msg;
 	int xferred;
+	unsigned int old_state = s->state;
 
 	if (s->state & SRV_MAINTAIN) {
 		s->health = s->rise;
@@ -445,6 +447,7 @@ void set_server_up(struct server *s) {
 
 		s->last_change = now.tv_sec;
 		s->state |= SRV_RUNNING;
+		s->state &= ~SRV_MAINTAIN;
 
 		if (s->slowstart > 0) {
 			s->state |= SRV_WARMINGUP;
@@ -456,17 +459,19 @@ void set_server_up(struct server *s) {
 				if (s->proxy->lbprm.update_server_eweight)
 					s->proxy->lbprm.update_server_eweight(s);
 			}
+			task_schedule(s->warmup, tick_add(now_ms, MS_TO_TICKS(MAX(1000, s->slowstart / 20))));
 		}
-		s->proxy->lbprm.set_server_status_up(s);
+		if (s->proxy->lbprm.set_server_status_up)
+			s->proxy->lbprm.set_server_status_up(s);
 
 		/* check if we can handle some connections queued at the proxy. We
 		 * will take as many as we can handle.
 		 */
 		xferred = check_for_pending(s);
 
-		chunk_init(&msg, trash, sizeof(trash));
+		chunk_init(&msg, trash, trashlen);
 
-		if (s->state & SRV_MAINTAIN) {
+		if (old_state & SRV_MAINTAIN) {
 			chunk_printf(&msg,
 				"%sServer %s/%s is UP (leaving maintenance)", s->state & SRV_BACKUP ? "Backup " : "",
 				s->proxy->id, s->id);
@@ -488,8 +493,6 @@ void set_server_up(struct server *s) {
 				if (! (srv->state & SRV_MAINTAIN))
 					/* Only notify tracking servers if they're not in maintenance. */
 					set_server_up(srv);
-
-		s->state &= ~SRV_MAINTAIN;
 	}
 
 	if (s->health >= s->rise)
@@ -504,7 +507,8 @@ static void set_server_disabled(struct server *s) {
 	int xferred;
 
 	s->state |= SRV_GOINGDOWN;
-	s->proxy->lbprm.set_server_status_down(s);
+	if (s->proxy->lbprm.set_server_status_down)
+		s->proxy->lbprm.set_server_status_down(s);
 
 	/* we might have sessions queued on this server and waiting for
 	 * a connection. Those which are redispatchable will be queued
@@ -512,7 +516,7 @@ static void set_server_disabled(struct server *s) {
 	 */
 	xferred = redistribute_pending(s);
 
-	chunk_init(&msg, trash, sizeof(trash));
+	chunk_init(&msg, trash, trashlen);
 
 	chunk_printf(&msg,
 		"Load-balancing on %sServer %s/%s is disabled",
@@ -541,14 +545,15 @@ static void set_server_enabled(struct server *s) {
 	int xferred;
 
 	s->state &= ~SRV_GOINGDOWN;
-	s->proxy->lbprm.set_server_status_up(s);
+	if (s->proxy->lbprm.set_server_status_up)
+		s->proxy->lbprm.set_server_status_up(s);
 
 	/* check if we can handle some connections queued at the proxy. We
 	 * will take as many as we can handle.
 	 */
 	xferred = check_for_pending(s);
 
-	chunk_init(&msg, trash, sizeof(trash));
+	chunk_init(&msg, trash, trashlen);
 
 	chunk_printf(&msg,
 		"Load-balancing on %sServer %s/%s is enabled again",
@@ -579,7 +584,7 @@ void health_adjust(struct server *s, short status) {
 	if (s->observe >= HANA_OBS_SIZE)
 		return;
 
-	if (status >= HCHK_STATUS_SIZE || !analyze_statuses[status].desc)
+	if (status >= HANA_STATUS_SIZE || !analyze_statuses[status].desc)
 		return;
 
 	switch (analyze_statuses[status].lr[s->observe - 1]) {
@@ -776,8 +781,10 @@ static int event_srv_chk_w(int fd)
 			ret = send(fd, check_req, check_len, MSG_DONTWAIT | MSG_NOSIGNAL);
 			if (ret == check_len) {
 				/* we allow up to <timeout.check> if nonzero for a responce */
-				if (s->proxy->timeout.check)
+				if (s->proxy->timeout.check) {
 					t->expire = tick_add_ifset(now_ms, s->proxy->timeout.check);
+					task_queue(t);
+				}
 				EV_FD_SET(fd, DIR_RD);   /* prepare for reading reply */
 				goto out_nowake;
 			}
@@ -826,6 +833,10 @@ static int event_srv_chk_w(int fd)
 
 			/* good TCP connection is enough */
 			set_server_check_status(s, HCHK_STATUS_L4OK, NULL);
+
+			/* avoid accumulating TIME_WAIT on connect-only checks */
+			setsockopt(fd, SOL_SOCKET, SO_LINGER,
+				   (struct linger *) &nolinger, sizeof(struct linger));
 			goto out_wakeup;
 		}
 	}
@@ -870,14 +881,14 @@ static int event_srv_chk_r(int fd)
 	struct task *t = fdtab[fd].owner;
 	struct server *s = t->context;
 	char *desc;
-	int done;
+	int done, shutr;
 	unsigned short msglen;
 
 	if (unlikely((s->result & SRV_CHK_ERROR) || (fdtab[fd].state == FD_STERROR))) {
 		/* in case of TCP only, this tells us if the connection failed */
 		if (!(s->result & SRV_CHK_ERROR))
 			set_server_check_status(s, HCHK_STATUS_SOCKERR, NULL);
-
+		shutr = 1;
 		goto out_wakeup;
 	}
 
@@ -891,7 +902,7 @@ static int event_srv_chk_r(int fd)
 	 * with running the checks without attempting another socket read.
 	 */
 
-	done = 0;
+	done = shutr = 0;
 	for (len = 0; s->check_data_len < global.tune.chksize; s->check_data_len += len) {
 		len = recv(fd, s->check_data + s->check_data_len, global.tune.chksize - s->check_data_len, 0);
 		if (len <= 0)
@@ -899,14 +910,14 @@ static int event_srv_chk_r(int fd)
 	}
 
 	if (len == 0)
-		done = 1; /* connection hangup received */
+		done = shutr = 1; /* connection hangup received */
 	else if (len < 0 && errno != EAGAIN) {
 		/* Report network errors only if we got no other data. Otherwise
 		 * we'll let the upper layers decide whether the response is OK
 		 * or not. It is very common that an RST sent by the server is
 		 * reported as an error just after the last data chunk.
 		 */
-		done = 1;
+		done = shutr = 1;
 		if (!s->check_data_len) {
 			if (!(s->result & SRV_CHK_ERROR))
 				set_server_check_status(s, HCHK_STATUS_SOCKERR, NULL);
@@ -1155,7 +1166,15 @@ static int event_srv_chk_r(int fd)
 	*s->check_data = '\0';
 	s->check_data_len = 0;
 
-	/* Close the connection... */
+	/* Close the connection... We absolutely want to perform a hard close
+	 * and reset the connection if some data are pending, otherwise we end
+	 * up with many TIME_WAITs and eat all the source port range quickly.
+	 * To avoid sending RSTs all the time, we first try to drain pending
+	 * data.
+	 */
+	if (!shutr && recv(fd, trash, trashlen, MSG_NOSIGNAL|MSG_DONTWAIT) > 0)
+		setsockopt(fd, SOL_SOCKET, SO_LINGER,
+			   (struct linger *) &nolinger, sizeof(struct linger));
 	shutdown(fd, SHUT_RDWR);
 	EV_FD_CLR(fd, DIR_RD);
 	task_wakeup(t, TASK_WOKEN_IO);
@@ -1165,6 +1184,49 @@ static int event_srv_chk_r(int fd)
  wait_more_data:
 	fdtab[fd].ev &= ~FD_POLL_IN;
 	return 0;
+}
+
+/*
+ * updates the server's weight during a warmup stage. Once the final weight is
+ * reached, the task automatically stops. Note that any server status change
+ * must have updated s->last_change accordingly.
+ */
+static struct task *server_warmup(struct task *t)
+{
+	struct server *s = t->context;
+
+	/* by default, plan on stopping the task */
+	t->expire = TICK_ETERNITY;
+	if ((s->state & (SRV_RUNNING|SRV_WARMINGUP|SRV_MAINTAIN)) != (SRV_RUNNING|SRV_WARMINGUP))
+		return t;
+
+	if (now.tv_sec < s->last_change || now.tv_sec >= s->last_change + s->slowstart) {
+		/* go to full throttle if the slowstart interval is reached */
+		s->state &= ~SRV_WARMINGUP;
+		if (s->proxy->lbprm.algo & BE_LB_PROP_DYN)
+			s->eweight = s->uweight * BE_WEIGHT_SCALE;
+		if (s->proxy->lbprm.update_server_eweight)
+			s->proxy->lbprm.update_server_eweight(s);
+	}
+	else if (s->proxy->lbprm.algo & BE_LB_PROP_DYN) {
+		/* for dynamic algorithms, let's slowly update the weight */
+		s->eweight = (BE_WEIGHT_SCALE * (now.tv_sec - s->last_change) +
+			      s->slowstart - 1) / s->slowstart;
+		s->eweight *= s->uweight;
+		if (s->proxy->lbprm.update_server_eweight)
+			s->proxy->lbprm.update_server_eweight(s);
+	}
+	/* Note that static algorithms are already running at full throttle */
+
+	/* probably that we can refill this server with a bit more connections */
+	check_for_pending(s);
+
+	/* get back there in 1 second or 1/20th of the slowstart interval,
+	 * whichever is greater, resulting in small 5% steps.
+	 */
+	if (s->state & SRV_WARMINGUP)
+		t->expire = tick_add(now_ms, MS_TO_TICKS(MAX(1000, s->slowstart / 20)));
+	return t;
 }
 
 /*
@@ -1179,8 +1241,6 @@ struct task *process_chk(struct task *t)
 	int fd;
 	int rv;
 
-	//fprintf(stderr, "process_chk: task=%p\n", t);
-
  new_chk:
 	if (attempts++ > 0) {
 		/* we always fail to create a server, let's stop insisting... */
@@ -1190,7 +1250,6 @@ struct task *process_chk(struct task *t)
 	}
 	fd = s->curfd;
 	if (fd < 0) {   /* no check currently running */
-		//fprintf(stderr, "process_chk: 2\n");
 		if (!tick_is_expired(t->expire, now_ms)) /* woke up too early */
 			return t;
 
@@ -1419,31 +1478,8 @@ struct task *process_chk(struct task *t)
 		goto new_chk;
 	}
 	else {
-		//fprintf(stderr, "process_chk: 8\n");
 		/* there was a test running */
 		if ((s->result & (SRV_CHK_ERROR|SRV_CHK_RUNNING)) == SRV_CHK_RUNNING) { /* good server detected */
-			//fprintf(stderr, "process_chk: 9\n");
-
-			if (s->state & SRV_WARMINGUP) {
-				if (now.tv_sec < s->last_change || now.tv_sec >= s->last_change + s->slowstart) {
-					s->state &= ~SRV_WARMINGUP;
-					if (s->proxy->lbprm.algo & BE_LB_PROP_DYN)
-						s->eweight = s->uweight * BE_WEIGHT_SCALE;
-					if (s->proxy->lbprm.update_server_eweight)
-						s->proxy->lbprm.update_server_eweight(s);
-				}
-				else if (s->proxy->lbprm.algo & BE_LB_PROP_DYN) {
-					/* for dynamic algorithms, let's update the weight */
-					s->eweight = (BE_WEIGHT_SCALE * (now.tv_sec - s->last_change) +
-						      s->slowstart - 1) / s->slowstart;
-					s->eweight *= s->uweight;
-					if (s->proxy->lbprm.update_server_eweight)
-						s->proxy->lbprm.update_server_eweight(s);
-				}
-				/* probably that we can refill this server with a bit more connections */
-				check_for_pending(s);
-			}
-
 			/* we may have to add/remove this server from the LB group */
 			if ((s->state & SRV_RUNNING) && (s->proxy->options & PR_O_DISABLE404)) {
 				if ((s->state & SRV_GOINGDOWN) &&
@@ -1467,7 +1503,6 @@ struct task *process_chk(struct task *t)
 			if (global.spread_checks > 0) {
 				rv = srv_getinter(s) * global.spread_checks / 100;
 				rv -= (int) (2 * rv * (rand() / (RAND_MAX + 1.0)));
-				//fprintf(stderr, "process_chk(%p): (%d+/-%d%%) random=%d\n", s, srv_getinter(s), global.spread_checks, rv);
 			}
 			t->expire = tick_add(now_ms, MS_TO_TICKS(srv_getinter(s) + rv));
 			goto new_chk;
@@ -1484,7 +1519,6 @@ struct task *process_chk(struct task *t)
 				}
 			}
 
-			//fprintf(stderr, "process_chk: 10\n");
 			/* failure or timeout detected */
 			if (s->health > s->rise) {
 				s->health--; /* still good */
@@ -1493,20 +1527,21 @@ struct task *process_chk(struct task *t)
 			else
 				set_server_down(s);
 			s->curfd = -1;
+			/* avoid accumulating TIME_WAIT on timeouts */
+			setsockopt(fd, SOL_SOCKET, SO_LINGER,
+				   (struct linger *) &nolinger, sizeof(struct linger));
 			fd_delete(fd);
 
 			rv = 0;
 			if (global.spread_checks > 0) {
 				rv = srv_getinter(s) * global.spread_checks / 100;
 				rv -= (int) (2 * rv * (rand() / (RAND_MAX + 1.0)));
-				//fprintf(stderr, "process_chk(%p): (%d+/-%d%%) random=%d\n", s, srv_getinter(s), global.spread_checks, rv);
 			}
 			t->expire = tick_add(now_ms, MS_TO_TICKS(srv_getinter(s) + rv));
 			goto new_chk;
 		}
 		/* if result is unknown and there's no timeout, we have to wait again */
 	}
-	//fprintf(stderr, "process_chk: 11\n");
 	s->result = SRV_CHK_UNKNOWN;
 	return t;
 }
@@ -1554,9 +1589,24 @@ int start_checks() {
 	 */
 	for (px = proxy; px; px = px->next) {
 		for (s = px->srv; s; s = s->next) {
+			if (s->slowstart) {
+				if ((t = task_new()) == NULL) {
+					Alert("Starting [%s:%s] check: out of memory.\n", px->id, s->id);
+					return -1;
+				}
+				/* We need a warmup task that will be called when the server
+				 * state switches from down to up.
+				 */
+				s->warmup = t;
+				t->process = server_warmup;
+				t->context = s;
+				t->expire = TICK_ETERNITY;
+			}
+
 			if (!(s->state & SRV_CHECKED))
 				continue;
 
+			/* one task for the checks */
 			if ((t = task_new()) == NULL) {
 				Alert("Starting [%s:%s] check: out of memory.\n", px->id, s->id);
 				return -1;
@@ -1642,6 +1692,9 @@ static int httpchk_expect(struct server *s, int done)
 
 		/* Check that response body is not empty... */
 		if (*contentptr == '\0') {
+			if (!done)
+				return 0;
+
 			set_server_check_status(s, HCHK_STATUS_L7RSP,
 						"HTTP content check found empty response body");
 			return 1;

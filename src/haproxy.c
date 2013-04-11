@@ -1,6 +1,6 @@
 /*
  * HA-Proxy : High Availability-enabled HTTP/TCP proxy
- * Copyright 2000-2010  Willy Tarreau <w@1wt.eu>.
+ * Copyright 2000-2013  Willy Tarreau <w@1wt.eu>.
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -44,6 +44,7 @@
 #include <sys/resource.h>
 #include <time.h>
 #include <syslog.h>
+#include <grp.h>
 
 #ifdef DEBUG_FULL
 #include <assert.h>
@@ -135,7 +136,8 @@ static int *oldpids = NULL;
 static int oldpids_sig; /* use USR1 or TERM */
 
 /* this is used to drain data, and as a temporary buffer for sprintf()... */
-char trash[BUFSIZE];
+char *trash = NULL;
+int trashlen = BUFSIZE;
 
 /* this buffer is always the same size as standard buffers and is used for
  * swapping data inside a buffer.
@@ -157,7 +159,7 @@ char hostname[MAX_HOSTNAME_LEN];
 void display_version()
 {
 	printf("HA-Proxy version " HAPROXY_VERSION " " HAPROXY_DATE"\n");
-	printf("Copyright 2000-2010 Willy Tarreau <w@1wt.eu>\n\n");
+	printf("Copyright 2000-2013 Willy Tarreau <w@1wt.eu>\n\n");
 }
 
 void display_build_opts()
@@ -284,7 +286,7 @@ void sig_dump_state(int sig)
 
 		send_log(p, LOG_NOTICE, "SIGHUP received, dumping servers states for proxy %s.\n", p->id);
 		while (s) {
-			snprintf(trash, sizeof(trash),
+			snprintf(trash, trashlen,
 				 "SIGHUP: Server %s/%s is %s. Conn: %d act, %d pend, %lld tot.",
 				 p->id, s->id,
 				 (s->state & SRV_RUNNING) ? "UP" : "DOWN",
@@ -296,18 +298,18 @@ void sig_dump_state(int sig)
 
 		/* FIXME: those info are a bit outdated. We should be able to distinguish between FE and BE. */
 		if (!p->srv) {
-			snprintf(trash, sizeof(trash),
+			snprintf(trash, trashlen,
 				 "SIGHUP: Proxy %s has no servers. Conn: act(FE+BE): %d+%d, %d pend (%d unass), tot(FE+BE): %lld+%lld.",
 				 p->id,
 				 p->feconn, p->beconn, p->totpend, p->nbpend, p->counters.cum_feconn, p->counters.cum_beconn);
 		} else if (p->srv_act == 0) {
-			snprintf(trash, sizeof(trash),
+			snprintf(trash, trashlen,
 				 "SIGHUP: Proxy %s %s ! Conn: act(FE+BE): %d+%d, %d pend (%d unass), tot(FE+BE): %lld+%lld.",
 				 p->id,
 				 (p->srv_bck) ? "is running on backup servers" : "has no server available",
 				 p->feconn, p->beconn, p->totpend, p->nbpend, p->counters.cum_feconn, p->counters.cum_beconn);
 		} else {
-			snprintf(trash, sizeof(trash),
+			snprintf(trash, trashlen,
 				 "SIGHUP: Proxy %s has %d active servers and %d backup servers available."
 				 " Conn: act(FE+BE): %d+%d, %d pend (%d unass), tot(FE+BE): %lld+%lld.",
 				 p->id, p->srv_act, p->srv_bck,
@@ -392,7 +394,6 @@ void init(int argc, char **argv)
 {
 	int i;
 	int arg_mode = 0;	/* MODE_DEBUG, ... */
-	char *old_argv = *argv;
 	char *tmp;
 	char *cfg_pidfile = NULL;
 	int err_code = 0;
@@ -404,7 +405,7 @@ void init(int argc, char **argv)
 	 */
     
 	totalconn = actconn = maxfd = listeners = stopping = 0;
-    
+	trash = malloc(trashlen);
 
 #ifdef HAPROXY_MEMMAX
 	global.rlimit_memmax = HAPROXY_MEMMAX;
@@ -505,7 +506,7 @@ void init(int argc, char **argv)
 					while (argc > 0) {
 						oldpids[nb_oldpids] = atol(*argv);
 						if (oldpids[nb_oldpids] <= 0)
-							usage(old_argv);
+							usage(progname);
 						argc--; argv++;
 						nb_oldpids++;
 					}
@@ -514,7 +515,7 @@ void init(int argc, char **argv)
 			else { /* >=2 args */
 				argv++; argc--;
 				if (argc == 0)
-					usage(old_argv);
+					usage(progname);
 
 				switch (*flag) {
 				case 'n' : cfg_maxconn = atol(*argv); break;
@@ -530,12 +531,12 @@ void init(int argc, char **argv)
 					LIST_ADDQ(&cfg_cfgfiles, &wl->list);
 					break;
 				case 'p' : cfg_pidfile = *argv; break;
-				default: usage(old_argv);
+				default: usage(progname);
 				}
 			}
 		}
 		else
-			usage(old_argv);
+			usage(progname);
 		argv++; argc--;
 	}
 
@@ -544,7 +545,7 @@ void init(int argc, char **argv)
 			     | MODE_QUIET | MODE_CHECK | MODE_DEBUG));
 
 	if (LIST_ISEMPTY(&cfg_cfgfiles))
-		usage(old_argv);
+		usage(progname);
 
 	/* NB: POSIX does not make it mandatory for gethostname() to NULL-terminate
 	 * the string in case of truncation, and at least FreeBSD appears not to do
@@ -649,9 +650,16 @@ void init(int argc, char **argv)
 	if (arg_mode & (MODE_DEBUG | MODE_FOREGROUND)) {
 		/* command line debug mode inhibits configuration mode */
 		global.mode &= ~(MODE_DAEMON | MODE_QUIET);
+		global.mode |= (arg_mode & (MODE_DEBUG | MODE_FOREGROUND));
 	}
-	global.mode |= (arg_mode & (MODE_DAEMON | MODE_FOREGROUND | MODE_QUIET |
-				    MODE_VERBOSE | MODE_DEBUG ));
+
+	if (arg_mode & MODE_DAEMON) {
+		/* command line daemon mode inhibits foreground and debug modes mode */
+		global.mode &= ~(MODE_DEBUG | MODE_FOREGROUND);
+		global.mode |= (arg_mode & MODE_DAEMON);
+	}
+
+	global.mode |= (arg_mode & (MODE_QUIET | MODE_VERBOSE));
 
 	if ((global.mode & MODE_DEBUG) && (global.mode & (MODE_DAEMON | MODE_QUIET))) {
 		Warning("<debug> mode incompatible with <quiet> and <daemon>. Keeping <debug> only.\n");
@@ -703,7 +711,16 @@ void init(int argc, char **argv)
 		list_pollers(stderr);
 
 	if (!init_pollers()) {
-		Alert("No polling mechanism available.\n");
+		Alert("No polling mechanism available.\n"
+		      "  It is likely that haproxy was built with TARGET=generic and that FD_SETSIZE\n"
+		      "  is too low on this platform to support maxconn and the number of listeners\n"
+		      "  and servers. You should rebuild haproxy specifying your system using TARGET=\n"
+		      "  in order to support other polling systems (poll, epoll, kqueue) or reduce the\n"
+		      "  global maxconn setting to accomodate the system's limitation. For reference,\n"
+		      "  FD_SETSIZE=%d on this system, global.maxconn=%d resulting in a maximum of\n"
+		      "  %d file descriptors. You should thus reduce global.maxconn by %d. Also,\n"
+		      "  check build settings using 'haproxy -vv'.\n\n",
+		      FD_SETSIZE, global.maxconn, global.maxsock, (global.maxsock + 1 - FD_SETSIZE) / 2);
 		exit(1);
 	}
 	if (global.mode & (MODE_VERBOSE|MODE_DEBUG)) {
@@ -732,6 +749,7 @@ void deinit(void)
 	int i;
 
 	while (p) {
+		free(p->conf.file);
 		free(p->id);
 		free(p->check_req);
 		free(p->cookie_name);
@@ -859,6 +877,11 @@ void deinit(void)
 			if (s->check) {
 				task_delete(s->check);
 				task_free(s->check);
+			}
+
+			if (s->warmup) {
+				task_delete(s->warmup);
+				task_free(s->warmup);
 			}
 
 			free(s->id);
@@ -1156,14 +1179,13 @@ int main(int argc, char **argv)
 
 	/* chroot if needed */
 	if (global.chroot != NULL) {
-		if (chroot(global.chroot) == -1) {
+		if (chroot(global.chroot) == -1 || chdir("/") == -1) {
 			Alert("[%s.main()] Cannot chroot(%s).\n", argv[0], global.chroot);
 			if (nb_oldpids)
 				tell_old_pids(SIGTTIN);
 			protocol_unbind_all();
 			exit(1);
 		}
-		chdir("/");
 	}
 
 	if (nb_oldpids)
@@ -1174,10 +1196,16 @@ int main(int argc, char **argv)
 	 */
 
 	/* setgid / setuid */
-	if (global.gid && setgid(global.gid) == -1) {
-		Alert("[%s.main()] Cannot set gid %d.\n", argv[0], global.gid);
-		protocol_unbind_all();
-		exit(1);
+	if (global.gid) {
+		if (getgroups(0, NULL) > 0 && setgroups(0, NULL) == -1)
+			Warning("[%s.main()] Failed to drop supplementary groups. Using 'gid'/'group'"
+				" without 'uid'/'user' is generally useless.\n", argv[0]);
+
+		if (setgid(global.gid) == -1) {
+			Alert("[%s.main()] Cannot set gid %d.\n", argv[0], global.gid);
+			protocol_unbind_all();
+			exit(1);
+		}
 	}
 
 	if (global.uid && setuid(global.uid) == -1) {

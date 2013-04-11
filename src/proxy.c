@@ -313,12 +313,22 @@ struct proxy *findproxy_mode(const char *name, int mode, int cap) {
 	return target;
 }
 
+/* Returns a pointer to the proxy matching either name <name>, or id <name> if
+ * <name> begins with a '#'. NULL is returned if no match is found, as well as
+ * if multiple matches are found (eg: too large capabilities mask).
+ */
 struct proxy *findproxy(const char *name, int cap) {
 
 	struct proxy *curproxy, *target = NULL;
+	int pid = 0;
+
+	if (*name == '#')
+		pid = atoi(name + 1);
 
 	for (curproxy = proxy; curproxy; curproxy = curproxy->next) {
-		if ((curproxy->cap & cap)!=cap || strcmp(curproxy->id, name))
+		if ((curproxy->cap & cap) != cap ||
+		    (pid && curproxy->uuid != pid) ||
+		    (!pid && strcmp(curproxy->id, name)))
 			continue;
 
 		if (!target) {
@@ -354,7 +364,7 @@ struct server *findserver(const struct proxy *px, const char *name) {
 			continue;
 		}
 
-		Alert("Refusing to use duplicated server '%s' fould in proxy: %s!\n",
+		Alert("Refusing to use duplicated server '%s' found in proxy: %s!\n",
 			name, px->id);
 
 		return NULL;
@@ -744,6 +754,11 @@ int session_set_backend(struct session *s, struct proxy *be)
 
 		s->txn.hdr_idx.size = MAX_HTTP_HDR;
 		hdr_idx_init(&s->txn.hdr_idx);
+	}
+
+	if (be->options2 & PR_O2_NODELAY) {
+		s->req->flags |= BF_NEVER_WAIT;
+		s->rep->flags |= BF_NEVER_WAIT;
 	}
 
 	/* We want to enable the backend-specific analysers except those which

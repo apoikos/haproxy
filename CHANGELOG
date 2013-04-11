@@ -1,6 +1,173 @@
 ChangeLog :
 ===========
 
+2013/04/03 : 1.4.23
+    - CONTRIB: halog: sort URLs by avg bytes_read or total bytes_read
+    - BUG: fix garbage data when http-send-name-header replaces an existing header
+    - BUG/MEDIUM: remove supplementary groups when changing gid
+    - BUG/MINOR: Correct logic in cut_crlf()
+    - BUG/MINOR: config: use a copy of the file name in proxy configurations
+    - BUG/MINOR: epoll: correctly disable FD polling in fd_rem()
+    - MINOR: halog: sort output by cookie code
+    - BUG/MINOR: halog: -ad/-ac report the correct number of output lines
+    - BUG/MINOR: halog: fix help message for -ut/-uto
+    - BUG/MEDIUM: http: set DONTWAIT on data when switching to tunnel mode
+    - BUG/MEDIUM: command-line option -D must have precedence over "debug"
+    - OPTIM: halog: keep a fast path for the lines-count only
+    - MINOR: halog: add a parameter to limit output line count
+    - BUG: halog: fix broken output limitation
+    - MEDIUM: checks: avoid accumulating TIME_WAITs during checks
+    - MEDIUM: checks: prevent TIME_WAITs from appearing also on timeouts
+    - BUG/MAJOR: cli: show sess <id> may randomly corrupt the back-ref list
+    - BUG/MINOR: http: don't report client aborts as server errors
+    - BUG/MINOR: http: don't log a 503 on client errors while waiting for requests
+    - BUG/MEDIUM: tcp: process could theorically crash on lack of source ports
+    - BUG/MINOR: http: don't abort client connection on premature responses
+    - BUILD: no need to clean up when making git-tar
+    - MINOR: http: always report PR-- flags for redirect rules
+    - BUG/MINOR: time: frequency counters are not totally accurate
+    - BUG/MINOR: http: don't process abortonclose when request was sent
+    - BUG/MINOR: epoll: use a fix maxevents argument in epoll_wait()
+    - BUG/MINOR: config: fix improper check for failed memory alloc in ACL parser
+    - BUG/MEDIUM: checks: ensure the health_status is always within bounds
+    - CLEANUP: http: remove a useless null check
+    - BUG/MEDIUM: signal: signal handler does not properly check for signal bounds
+    - BUG/MEDIUM: uri_auth: missing NULL check and memory leak on memory shortage
+    - CLEANUP: config: slowstart is never negative
+    - BUILD: improve the makefile's support for libpcre
+    - BUG/MINOR: checks: fix an warning introduced by commit 2f61455a
+    - MEDIUM: halog: add support for counting per source address (-ic)
+    - DOC: mention the new HTTP 307 and 308 redirect statues     (cherry picked from commit b67fdc4cd8bde202f2805d98683ddab929469a05)
+    - MEDIUM: poll: do not use FD_* macros anymore
+    - BUG/MAJOR: ev_select: disable the select() poller if maxsock > FD_SETSIZE
+    - BUILD: enable poll() by default in the makefile
+    - BUILD: add explicit support for Mac OS/X
+    - BUG/CRITICAL: using HTTP information in tcp-request content may crash the process
+    - MEDIUM: http: implement redirect 307 and 308
+    - MINOR: http: status 301 should not be marked non-cacheable
+
+2012/08/14 : 1.4.22
+    - BUG/MEDIUM: option forwardfor if-none doesn't work with some configurations
+    - MINOR: balance uri: added 'whole' parameter to include query string in hash calculation
+    - DOC: specify the default value for maxconn in the context of a proxy
+    - BUG/MINOR: checks: expire on timeout.check if smaller than timeout.connect
+    - REORG/MINOR: use dedicated proxy flags for the cookie handling
+    - BUG/MINOR: config: do not report twice the incompatibility between cookie and non-http
+    - MINOR: http: add support for "httponly" and "secure" cookie attributes
+    - MEDIUM: stats: add support for soft stop/soft start in the admin interface
+    - BUILD: add support for linux kernels >= 2.6.28
+    - MINOR: contrib/iprange: add a network IP range to mask converter
+    - BUILD: add an AIX 5.2 (and later) target.
+    - MINOR: halog: use the more recent dual-mode fgets2 implementation
+    - BUG/MEDIUM: ebtree: ebmb_insert() must not call cmp_bits on full-length matches
+    - CLEANUP: halog: make clean should also remove .o files     (cherry picked from commit 8ad4193100aafa19f04929670371bf823dbe11d0)
+    - OPTIM: halog: make use of memchr() on platforms which provide a fast one
+    - OPTIM: halog: improve cold-cache behaviour when loading a file
+    - [MINOR] config: make it possible to specify a cookie even without a server
+    - MINOR: config: tolerate server "cookie" setting in non-HTTP mode
+    - BUG/MINOR: tarpit: fix condition to return the HTTP 500 message
+
+2012/05/21 : 1.4.21
+    - MINOR: patch for minor typo (ressources/resources)
+    - CLEANUP: fix typo in findserver() log message
+    - DOC: cleanup indentation, alignment, columns and chapters
+    - DOC: fix some keywords arguments documentation
+    - MINOR: stats admin: allow unordered parameters in POST requests
+    - MINOR: stats admin: use the backend id instead of its name in the form
+    - BUG/MAJOR: trash must always be the size of a buffer
+    - DOC: fix minor regex example issue and improve doc on stats
+    - BUG/MAJOR: possible crash when using capture headers on TCP frontends
+    - MINOR: config: disable header captures in TCP mode and complain
+    - BUG/MEDIUM: balance source did not properly hash IPv6 addresses
+    - CLEANUP: http: message parser must ignore HTTP_MSG_ERROR
+    - CLEANUP: remove a few warning about unchecked return values in debug code
+    - CLEANUP: http: remove unused http_msg->col
+    - BUG/MINOR: http: error snapshots are wrong if buffer wraps
+    - BUG/MAJOR: checks: don't call set_server_status_* when no LB algo is set
+    - MINOR: proxy: make findproxy() return proxies from numeric IDs too
+    - BUILD: http: stop gcc-4.1.2 from complaining about possibly uninitialized values
+    - BUG/MINOR: stop connect timeout when connect succeeds
+
+2012/03/10 : 1.4.20
+    - BUG/MINOR: fix typo in processing of http-send-name-header
+    - BUG/MEDIUM: correctly disable servers tracking another disabled servers.
+    - BUG/MEDIUM: zero-weight servers must not dequeue requests from the backend
+    - MINOR: halog: add some help on the command line     (cherry picked from commit 615674cdec067066a42f53f5d55628ab7b207e6c)
+    - BUILD: fix build error on FreeBSD
+    - BUG: queue: fix dequeueing sequence on HTTP keep-alive sessions
+    - BUG: http: disable TCP delayed ACKs when forwarding content-length data
+    - BUG: checks: fix server maintenance exit sequence
+    - BUG/MINOR: stream_sock: don't remove BF_EXPECT_MORE and BF_SEND_DONTWAIT on partial writes
+    - DOC: enumerate valid status codes for "observe layer7"
+    - BUILD: make it possible to look for pcre in the default system paths
+
+2012/01/08 : 1.4.19
+    - MEDIUM: http: add support for sending the server's name in the outgoing request
+    - BUG/MINOR: fix options forwardfor if-none when an alternative header name is specified
+    - MINOR: task: new function task_schedule() to schedule a wake up
+    - BUG/MEDIUM: checks: fix slowstart behaviour when server tracking is in use
+    - BUG: tcp: option nolinger does not work on backends
+    - BUG: ebtree: ebst_lookup() could return the wrong entry
+    - BUG: http: re-enable TCP quick-ack upon incomplete HTTP requests
+    - CLEANUP: ebtree: remove a few annoying signedness warnings
+    - CLEANUP: ebtree: remove 4-year old harmless typo in duplicates insertion code
+    - CLEANUP: ebtree: remove another typo, a wrong initialization in insertion code
+    - BUG: proto_tcp: set AF_INET on tproxy for use with recent kernels
+    - MINOR: halog: add support for matching queued requests
+    - BUG: http: tighten the list of allowed characters in a URI
+
+2011/09/16 : 1.4.18
+    - [MINOR] http: *_dom matching header functions now also split on ":"
+    - [MINOR] halog: support backslash-escaped quotes
+    - BUILD/MINOR: fix the source URL in the spec file
+    - DOC: acl is http_first_req, not http_req_first
+    - BUG/MEDIUM: don't trim last spaces from headers consisting only of spaces
+    - MINOR: acl: add new matches for header/path/url length
+    - [MINOR] halog: do not consider byte 0x8A as end of line
+    - [OPTIM] halog: make fgets parse more bytes by blocks
+    - [OPTIM] halog: add assembly version of the field lookup code
+    - [CLEANUP] startup: report only the basename in the usage message
+    - [DOC] update the README file to reflect new naming rules for patches
+    - BUILD: halog: make halog build on solaris
+
+2011/09/05 : 1.4.17
+    - [MINOR] halog: add support for termination code matching (-tcn/-TCN)
+    - [MINOR] halog: make SKIP_CHAR stop on field delimiters
+    - [MINOR] halog: add support for HTTP log matching (-H)
+    - [MINOR] halog: gain back performance before SKIP_CHAR fix
+    - [OPTIM] halog: cache some common fields positions
+    - [OPTIM] halog: check once for correct line format and reuse the pointer
+    - [OPTIM] halog: remove many 'if' by using a function pointer for the filters
+    - [OPTIM] halog: remove support for tab delimiters in input data
+    - [MINOR] halog: add -hs/-HS to filter by HTTP status code range
+    - [CLEANUP] update the year in the copyright banner
+    - [BUG] check: http-check expect + regex would crash in defaults section
+    - [MEDIUM] http: make x-forwarded-for addition conditional
+    - [DOC] fixed a few "sensible" -> "sensitive" errors
+    - [MINOR] stats: display "<NONE>" instead of the frontend name when unknown
+    - [BUG] http: trailing white spaces must also be trimmed after headers
+    - [MINOR] http: take a capture of too large requests and responses
+    - [MINOR] http: take a capture of truncated responses
+    - [MINOR] http: take a capture of bad content-lengths.
+
+2011/08/04 : 1.4.16
+    - [BUG] checks: fix support of Mysqld >= 5.5 for mysql-check
+    - [DOC] Minor spelling fixes and grammatical enhancements
+    - [CLEANUP] Remove assigned but unused variables
+    - [BUG] checks: http-check expect could fail a check on multi-packet responses
+    - [DOC] fix minor typo in the "dispatch" doc
+    - [MINOR] http: make the "HTTP 200" status code configurable.
+    - [MINOR] http: partially revert the chunking optimization for now
+    - [MINOR] stream_sock: always clear BF_EXPECT_MORE upon complete transfer
+    - [CLEANUP] stream_sock: remove unneeded FL_TCP and factor out test
+    - [MEDIUM] http: add support for "http-no-delay"
+    - [OPTIM] http: optimize chunking again in non-interactive mode
+    - [OPTIM] stream_sock: avoid fast-forwarding of partial data
+    - [OPTIM] stream_sock: don't use splice on too small payloads
+    - [BUG] stats: support url-encoded forms
+    - [BUG] halog: correctly handle truncated last line
+    - [DOC] fix typos, "#" is a sharp, not a dash
+
 2011/04/08 : 1.4.15
     - [CRITICAL] fix risk of crash when dealing with space in response cookies
 

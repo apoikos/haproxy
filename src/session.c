@@ -203,7 +203,8 @@ int sess_update_st_con_tcp(struct session *s, struct stream_interface *si)
 	}
 
 	/* OK, maybe we want to abort */
-	if (unlikely((rep->flags & BF_SHUTW) ||
+	if (!(req->flags & BF_WRITE_PARTIAL) &&
+	    unlikely((rep->flags & BF_SHUTW) ||
 		     ((req->flags & BF_SHUTW_NOW) && /* FIXME: this should not prevent a connection from establishing */
 		      (((req->flags & (BF_OUT_EMPTY|BF_WRITE_ACTIVITY)) == BF_OUT_EMPTY) ||
 		       s->be->options & PR_O_ABRT_CLOSE)))) {
@@ -989,6 +990,21 @@ resync_stream_interface:
 			if (may_dequeue_tasks(s->srv, s->be))
 				process_srv_queue(s->srv);
 		}
+
+		if (s->req->cons->iohandler == stats_io_handler &&
+		    s->req->cons->st0 == STAT_CLI_O_SESS && s->data_state == DATA_ST_LIST) {
+			/* This is a fix for a design bug in the stats I/O handler :
+			 * "show sess $sess" may corrupt the struct session if not
+			 * properly detached. Unfortunately, in 1.4 there is no way
+			 * to ensure we always cleanly unregister an I/O handler upon
+			 * error. So we're doing the cleanup here if we can detect the
+			 * situation.
+			 */
+			if (!LIST_ISEMPTY(&s->data_ctx.sess.bref.users)) {
+				LIST_DEL(&s->data_ctx.sess.bref.users);
+				LIST_INIT(&s->data_ctx.sess.bref.users);
+			}
+		}
 	}
 
 	/*
@@ -1408,6 +1424,19 @@ resync_stream_interface:
 			    s->srv->rdr_len && (s->flags & SN_REDIRECTABLE))
 				perform_http_redirect(s, &s->si[1]);
 		} while (s->si[1].state == SI_ST_ASS);
+
+		/* Now we can add the server name to a header (if requested) */
+		/* check for HTTP mode and proxy server_name_hdr_name != NULL */
+		if ((s->flags & SN_BE_ASSIGNED) &&
+			(s->be->mode == PR_MODE_HTTP) &&
+			(s->be->server_id_hdr_name != NULL)) {
+
+			http_send_name_header(&s->txn,
+					      &s->txn.req,
+					      s->req,
+					      s->be,
+					      s->srv->id);
+		}
 	}
 
 	/* Benchmarks have shown that it's optimal to do a full resync now */
@@ -1508,7 +1537,7 @@ resync_stream_interface:
 				      s->uniq_id, s->be->id,
 				      (unsigned short)s->si[0].fd,
 				      (unsigned short)s->si[1].fd);
-			write(1, trash, len);
+			if (write(1, trash, len) < 0) /* shut gcc warning */;
 		}
 
 		if (s->si[0].state == SI_ST_CLO &&
@@ -1517,7 +1546,7 @@ resync_stream_interface:
 				      s->uniq_id, s->be->id,
 				      (unsigned short)s->si[0].fd,
 				      (unsigned short)s->si[1].fd);
-			write(1, trash, len);
+			if (write(1, trash, len) < 0) /* shut gcc warning */;
 		}
 	}
 
@@ -1614,7 +1643,7 @@ resync_stream_interface:
 		len = sprintf(trash, "%08x:%s.closed[%04x:%04x]\n",
 			      s->uniq_id, s->be->id,
 			      (unsigned short)s->req->prod->fd, (unsigned short)s->req->cons->fd);
-		write(1, trash, len);
+		if (write(1, trash, len) < 0) /* shut gcc warning */;
 	}
 
 	s->logs.t_close = tv_ms_elapsed(&s->logs.tv_accept, &now);
