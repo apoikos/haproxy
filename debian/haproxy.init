@@ -19,12 +19,12 @@ EXTRAOPTS=
 ENABLED=0
 
 test -x $HAPROXY || exit 0
-test -f "$CONFIG" || exit 0
 
 if [ -e /etc/default/haproxy ]; then
 	. /etc/default/haproxy
 fi
 
+test -f "$CONFIG" || exit 0
 test "$ENABLED" != "0" || exit 0
 
 [ -f /etc/default/rcS ] && . /etc/default/rcS
